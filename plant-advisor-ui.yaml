@@ -1,0 +1,1425 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Plant Health AI Assistant UI - Flask app on ECS with ALB and CloudFront'
+
+Parameters:
+  MainStackName:
+    Type: String
+    Description: 'Name of the main CloudFormation stack'
+    
+  SourceBucket:
+    Type: String
+    Description: 'S3 bucket containing UI source code (ui-source.zip)'
+
+  GatewayId:
+    Type: String
+    Description: 'ID of the AgentCore Gateway'
+
+  AgentRuntimeARN:
+    Type: String
+    Description: 'ARN of the agent runtime environment'
+  
+  MemoryRoleARN:
+    Type: String
+    Description: 'ARN of the memory role'
+
+  MemoryId:
+    Type: String
+    Description: 'Memory Name'
+
+  DefaultUsername:
+    Type: String
+    Default: 'demo'
+    Description: 'Default username for application access'
+  
+  DefaultPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Default: 'demo2025'
+    Description: 'Default password for application access'
+
+
+Resources:
+
+  # Custom Resource Lambda to generate CloudFront secret
+  GenerateSecretFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt GenerateSecretRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import secrets
+          import string
+          import json
+          import urllib3
+          
+          def generate_secret(length=64):
+              """Generate a cryptographically secure random secret"""
+              alphabet = string.ascii_letters + string.digits + '+/='
+              return ''.join(secrets.choice(alphabet) for _ in range(length))
+          
+          def lambda_handler(event, context):
+              try:
+                  print(f'Event: {json.dumps(event)}')
+                  
+                  if event['RequestType'] == 'Delete':
+                      # On delete, just return success
+                      send_response(event, context, 'SUCCESS', {})
+                      return
+                  
+                  # Generate a 64-character high-entropy secret
+                  secret = generate_secret(64)
+                  print(f'Generated secret with length: {len(secret)}')
+                  
+                  send_response(event, context, 'SUCCESS', {'Secret': secret})
+                  
+              except Exception as e:
+                  error_msg = str(e)
+                  print(f'Error: {error_msg}')
+                  send_response(event, context, 'FAILED', {'Error': error_msg}, error_msg)
+          
+          def send_response(event, context, status, data, reason='OK'):
+              response_body = {
+                  'Status': status,
+                  'Reason': reason,
+                  'PhysicalResourceId': context.log_stream_name,
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId'],
+                  'Data': data
+              }
+              
+              http = urllib3.PoolManager()
+              http.request('PUT', event['ResponseURL'], 
+                          body=json.dumps(response_body),
+                          headers={'Content-Type': 'application/json'})
+
+  GenerateSecretRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  # Generate CloudFront secret automatically
+  CloudFrontSecretHeader:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt GenerateSecretFunction.Arn
+
+  # Custom Resource to look up CloudFront managed prefix list ID
+  CloudFrontPrefixListLookupFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt CloudFrontPrefixListLookupRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import urllib3
+          
+          def lambda_handler(event, context):
+              try:
+                  print(f'Event: {json.dumps(event)}')
+                  
+                  if event['RequestType'] == 'Delete':
+                      send_response(event, context, 'SUCCESS', {})
+                      return
+                  
+                  ec2 = boto3.client('ec2')
+                  
+                  # Look up the CloudFront origin-facing managed prefix list
+                  response = ec2.describe_managed_prefix_lists(
+                      Filters=[
+                          {
+                              'Name': 'prefix-list-name',
+                              'Values': ['com.amazonaws.global.cloudfront.origin-facing']
+                          }
+                      ]
+                  )
+                  
+                  if not response['PrefixLists']:
+                      error_msg = 'CloudFront managed prefix list not found'
+                      print(f'Error: {error_msg}')
+                      send_response(event, context, 'FAILED', {}, error_msg)
+                      return
+                  
+                  prefix_list_id = response['PrefixLists'][0]['PrefixListId']
+                  print(f'Found CloudFront prefix list ID: {prefix_list_id}')
+                  
+                  send_response(event, context, 'SUCCESS', {'PrefixListId': prefix_list_id})
+                  
+              except Exception as e:
+                  error_msg = str(e)
+                  print(f'Error: {error_msg}')
+                  send_response(event, context, 'FAILED', {}, error_msg)
+          
+          def send_response(event, context, status, data, reason='OK'):
+              response_body = {
+                  'Status': status,
+                  'Reason': reason,
+                  'PhysicalResourceId': context.log_stream_name,
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId'],
+                  'Data': data
+              }
+              
+              http = urllib3.PoolManager()
+              http.request('PUT', event['ResponseURL'], 
+                          body=json.dumps(response_body),
+                          headers={'Content-Type': 'application/json'})
+
+  CloudFrontPrefixListLookupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DescribePrefixLists
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeManagedPrefixLists
+                Resource: '*'
+
+  # Invoke the custom resource to get CloudFront prefix list ID
+  CloudFrontPrefixListId:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt CloudFrontPrefixListLookupFunction.Arn
+
+  # VPC and Networking
+  VPC:
+    Type: AWS::EC2::VPC
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W60
+            reason: "VPC Flow Logs not enabled to reduce costs - can be enabled for production if needed"
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: PlantAdvisor-VPC
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: PlantAdvisor-IGW
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  # Public Subnets for ALB
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W33
+            reason: "Public subnet requires MapPublicIpOnLaunch for NAT Gateway and ALB functionality"
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: PlantAdvisor-Public-Subnet-1
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W33
+            reason: "Public subnet requires MapPublicIpOnLaunch for NAT Gateway and ALB functionality"
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: PlantAdvisor-Public-Subnet-2
+
+  # Private Subnets for ECS
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.0.11.0/24
+      Tags:
+        - Key: Name
+          Value: PlantAdvisor-Private-Subnet-1
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: 10.0.12.0/24
+      Tags:
+        - Key: Name
+          Value: PlantAdvisor-Private-Subnet-2
+
+  # NAT Gateways
+  NatGateway1EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway2EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway1EIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway2EIP.AllocationId
+      SubnetId: !Ref PublicSubnet2
+
+  # Route Tables
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: PlantAdvisor-Public-Routes
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W36
+            reason: "Public route table requires 0.0.0.0/0 destination for internet access via IGW"
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: PlantAdvisor-Private-Routes-AZ1
+
+  DefaultPrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      SubnetId: !Ref PrivateSubnet1
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: PlantAdvisor-Private-Routes-AZ2
+
+  DefaultPrivateRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway2
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      SubnetId: !Ref PrivateSubnet2
+
+  # Security Groups
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: CloudFrontPrefixListId
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W9
+            reason: "ALB restricted to CloudFront IPs via AWS managed prefix list (com.amazonaws.global.cloudfront.origin-facing) - network-level security"
+          - id: W2
+            reason: "ALB uses CloudFront managed prefix list for network-level restriction - more secure than 0.0.0.0/0"
+    Properties:
+      GroupDescription: Security group for Application Load Balancer - CloudFront prefix list only
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourcePrefixListId: !GetAtt CloudFrontPrefixListId.PrefixListId
+          Description: Allow HTTP from CloudFront managed prefix list only (AWS auto-maintained) + secret header validation
+      # Egress rule added separately to avoid circular dependency
+
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ECS Fargate tasks - allows traffic from ALB only
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5000
+          ToPort: 5000
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          Description: Allow inbound from ALB only on port 5000
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: Allow HTTPS to AWS services (Bedrock, Cognito, etc)
+
+  # Separate egress rule to break circular dependency between security groups
+  ALBToECSEgressRule:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref ALBSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5000
+      ToPort: 5000
+      DestinationSecurityGroupId: !Ref ECSSecurityGroup
+      Description: Allow outbound to ECS tasks on port 5000 only
+
+
+
+  # Application Load Balancer
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W52
+            reason: "ALB access logging disabled to simplify deployment"
+          - id: W56
+            reason: "ALB uses HTTP because CloudFront handles HTTPS termination and encryption"
+    Properties:
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      LoadBalancerAttributes:
+        - Key: deletion_protection.enabled
+          Value: 'false'
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: 5000
+      Protocol: HTTP
+      VpcId: !Ref VPC
+      TargetType: ip
+      HealthCheckPath: /health
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 5
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W56
+            reason: "ALB uses HTTP because CloudFront handles HTTPS termination and encryption"
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  # ECS Cluster
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub 'PA-Cluster-${AWS::StackName}'
+
+  # ECS Task Definition
+  ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub 'pa-ui-${AWS::StackName}'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: 256
+      Memory: 512
+      ExecutionRoleArn: !Ref ECSExecutionRole
+      TaskRoleArn: !Ref ECSTaskRole
+      ContainerDefinitions:
+        - Name: plant-advisor-ui
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/plant-advisor-ui:latest'
+          PortMappings:
+            - ContainerPort: 5000
+          Environment:
+            - Name: AWS_DEFAULT_REGION
+              Value: !Ref AWS::Region
+            - Name: CONFIG_SOURCE
+              Value: 'hybrid'
+            - Name: CONFIG_PARAMETER_NAME
+              Value: !Sub '/plant-advisor/${MainStackName}/app-config'
+            - Name: CONFIG_SECRET_ARN
+              Value: !Ref AppConfigSecret
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref CloudWatchLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  # ECS Service
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn: 
+      - ALBListener
+      - BuildTrigger
+    Properties:
+      ServiceName: !Sub 'pa-ui-svc-${AWS::StackName}'
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref ECSTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      HealthCheckGracePeriodSeconds: 900
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets:
+            - !Ref PrivateSubnet1
+            - !Ref PrivateSubnet2
+      LoadBalancers:
+        - ContainerName: plant-advisor-ui
+          ContainerPort: 5000
+          TargetGroupArn: !Ref ALBTargetGroup
+
+  # IAM Roles
+  ECSExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "Bedrock InvokeAgentRuntime and logs actions don't support resource-level permissions"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AgentCoreRuntimeInvokePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock-agentcore:InvokeAgentRuntime
+                  - bedrock-agentcore:GetAgentRuntime
+                  - bedrock-agentcore:ListAgentRuntimes
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/plant-advisor/${MainStackName}/*'
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref AppConfigSecret
+
+  # KMS Key for CloudWatch Logs encryption
+  LogsKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: KMS key for CloudWatch Logs encryption
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: Allow CloudWatch Logs
+            Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action:
+              - 'kms:Encrypt'
+              - 'kms:Decrypt'
+              - 'kms:ReEncrypt*'
+              - 'kms:GenerateDataKey*'
+              - 'kms:CreateGrant'
+              - 'kms:DescribeKey'
+            Resource: '*'
+            Condition:
+              ArnLike:
+                'kms:EncryptionContext:aws:logs:arn': !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/plant-advisor-ui-${AWS::StackName}'
+
+  # CloudWatch Log Group
+  CloudWatchLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/plant-advisor-ui-${AWS::StackName}'
+      RetentionInDays: 7
+      KmsKeyId: !GetAtt LogsKMSKey.Arn
+
+
+  # SSM Parameter for non-sensitive configuration
+  AppConfigParameter:
+    Type: AWS::SSM::Parameter
+    DependsOn: 
+      - UserPool
+      - UserPoolClient
+      - IdentityPool
+      - UserPoolDomain
+    Properties:
+      Name: !Sub '/plant-advisor/${MainStackName}/app-config'
+      Description: 'Plant Advisor application configuration'
+      Type: String
+      Value: !Sub |
+        {
+          "RUNTIME_ARN": "${AgentRuntimeARN}",
+          "GATEWAY_ID": "${GatewayId}",
+          "REGION": "${AWS::Region}",
+          "MEMORY_ROLE_ARN": "${MemoryRoleARN}",
+          "MEMORY_NAME": "${MemoryId}",
+          "ACCOUNT_ID": "${AWS::AccountId}",
+          "COGNITO_USER_POOL_ID": "${UserPool}",
+          "COGNITO_CLIENT_ID": "${UserPoolClient}",
+          "COGNITO_IDENTITY_POOL_ID": "${IdentityPool}",
+          "COGNITO_DOMAIN": "${UserPoolDomain}"
+        }
+      Tags:
+        Application: PlantAdvisor
+        StackName: !Ref MainStackName
+
+  # Secrets Manager for sensitive configuration (CloudFront secret)
+  AppConfigSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub 'plant-advisor-app-config-${AWS::StackName}'
+      Description: 'Plant Advisor sensitive application configuration'
+      SecretString: !Sub 
+        - |
+          {
+            "CLOUDFRONT_SECRET_HEADER": "${GeneratedSecret}"
+          }
+        - GeneratedSecret: !GetAtt CloudFrontSecretHeader.Secret
+      Tags:
+        - Key: Application
+          Value: PlantAdvisor
+        - Key: StackName
+          Value: !Ref AWS::StackName
+
+  # Custom Resource to trigger build
+  BuildTriggerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.13
+      Handler: index.lambda_handler
+      Role: !GetAtt BuildTriggerRole.Arn
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import json, boto3, urllib3
+          
+          def lambda_handler(event, context):
+              try:
+                  if event['RequestType'] == 'Delete':
+                      send_response(event, context, 'SUCCESS', {})
+                      return
+                  
+                  codebuild = boto3.client('codebuild')
+                  response = codebuild.start_build(projectName=event['ResourceProperties']['ProjectName'])
+                  send_response(event, context, 'SUCCESS', {'BuildId': response['build']['id']})
+                  
+              except Exception as e:
+                  send_response(event, context, 'FAILED', {'Error': str(e)})
+          
+          def send_response(event, context, status, data):
+              response_body = {
+                  'Status': status,
+                  'Reason': 'OK',
+                  'PhysicalResourceId': context.log_stream_name,
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId'],
+                  'Data': data
+              }
+              http = urllib3.PoolManager()
+              http.request('PUT', event['ResponseURL'], body=json.dumps(response_body), headers={'Content-Type': 'application/json'})
+
+  BuildTriggerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CodeBuildTriggerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                Resource: '*'
+
+  BuildTrigger:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt BuildTriggerFunction.Arn
+      ProjectName: !Ref CodeBuildProject
+
+  # Cognito User Pool for Authentication
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub '${AWS::StackName}-users'
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: false
+          RequireLowercase: false
+          RequireNumbers: false
+          RequireSymbols: false
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub 'plantui-${AWS::AccountId}'
+      UserPoolId: !Ref UserPool
+
+
+      
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub '${AWS::StackName}-client'
+      GenerateSecret: false
+      SupportedIdentityProviders:
+        - COGNITO
+      CallbackURLs:
+        - 'https://example.com/callback'
+      LogoutURLs:
+        - 'https://example.com/'
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      AllowedOAuthFlowsUserPoolClient: true
+
+
+
+  # Cognito Identity Pool for user credential mapping
+  IdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      IdentityPoolName: !Sub '${AWS::StackName}-identity-pool'
+      AllowUnauthenticatedIdentities: false
+      CognitoIdentityProviders:
+        - ClientId: !Ref UserPoolClient
+          ProviderName: !GetAtt UserPool.ProviderName
+
+  # IAM Role for authenticated users
+  AuthenticatedRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "Bedrock InvokeModel actions don't support resource-level permissions"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                'cognito-identity.amazonaws.com:aud': !Ref IdentityPool
+              'ForAnyValue:StringLike':
+                'cognito-identity.amazonaws.com:amr': authenticated
+      Policies:
+        - PolicyName: AgentCoreAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock-agentcore:InvokeAgentRuntime
+                Resource: !Sub 'arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:runtime/*'
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: '*'
+
+  # Identity Pool Role Attachment
+  IdentityPoolRoleAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId: !Ref IdentityPool
+      Roles:
+        authenticated: !GetAtt AuthenticatedRole.Arn
+
+  # Custom Resource to create default user
+  CreateDefaultUserFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt CreateUserRole.Arn
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import urllib3
+          from botocore.exceptions import ClientError
+          
+          def lambda_handler(event, context):
+              try:
+                  if event['RequestType'] == 'Delete':
+                      send_response(event, context, 'SUCCESS', {})
+                      return
+                  
+                  cognito = boto3.client('cognito-idp')
+                  user_pool_id = event['ResourceProperties']['UserPoolId']
+                  username = event['ResourceProperties']['Username']
+                  password = event['ResourceProperties']['Password']
+                  
+                  try:
+                      # Create user with permanent password
+                      cognito.admin_create_user(
+                          UserPoolId=user_pool_id,
+                          Username=username,
+                          TemporaryPassword=password,
+                          MessageAction='SUPPRESS'
+                      )
+                  except ClientError as e:
+                      if e.response['Error']['Code'] != 'UsernameExistsException':
+                          raise
+
+                  # Set permanent password (works for both new and existing users)
+                  cognito.admin_set_user_password(
+                      UserPoolId=user_pool_id,
+                      Username=username,
+                      Password=password,
+                      Permanent=True
+                  )
+
+                  
+                  send_response(event, context, 'SUCCESS', {'Username': username})
+                  
+              except Exception as e:
+                  send_response(event, context, 'FAILED', {'Error': str(e)})
+          
+          def send_response(event, context, status, data):
+              response_body = {
+                  'Status': status,
+                  'Reason': 'OK',
+                  'PhysicalResourceId': data.get('Username', context.log_stream_name),
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId'],
+                  'Data': data
+              }
+              
+              http = urllib3.PoolManager()
+              http.request('PUT', event['ResponseURL'], 
+                          body=json.dumps(response_body),
+                          headers={'Content-Type': 'application/json'})
+
+  CreateUserRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CognitoUserManagement
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cognito-idp:AdminCreateUser
+                  - cognito-idp:AdminSetUserPassword
+                  - cognito-idp:AdminDeleteUser
+                  - cognito-idp:UpdateUserPoolClient
+                Resource: !Sub 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${UserPool}'
+
+  # Create the default user
+  DefaultUser:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: UserPool
+    Properties:
+      ServiceToken: !GetAtt CreateDefaultUserFunction.Arn
+      UserPoolId: !Ref UserPool
+      Username: !Ref DefaultUsername
+      Password: !Ref DefaultPassword
+
+  # Update Cognito callback URLs after CloudFront is created
+  UpdateCallbackURLsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt CreateUserRole.Arn
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import urllib3
+          
+          def lambda_handler(event, context):
+              try:
+                  if event['RequestType'] == 'Delete':
+                      send_response(event, context, 'SUCCESS', {})
+                      return
+                  
+                  cognito = boto3.client('cognito-idp')
+                  user_pool_id = event['ResourceProperties']['UserPoolId']
+                  client_id = event['ResourceProperties']['ClientId']
+                  cloudfront_domain = event['ResourceProperties']['CloudFrontDomain']
+                  
+                  cognito.update_user_pool_client(
+                      UserPoolId=user_pool_id,
+                      ClientId=client_id,
+                      CallbackURLs=[f'https://{cloudfront_domain}/callback'],
+                      LogoutURLs=[f'https://{cloudfront_domain}/'],
+                      AllowedOAuthFlows=['code'],
+                      AllowedOAuthScopes=['openid', 'email', 'profile'],
+                      AllowedOAuthFlowsUserPoolClient=True,
+                      SupportedIdentityProviders=['COGNITO']
+                  )
+                  
+                  send_response(event, context, 'SUCCESS', {'Updated': 'true'})
+                  
+              except Exception as e:
+                  send_response(event, context, 'FAILED', {'Error': str(e)})
+          
+          def send_response(event, context, status, data):
+              response_body = {
+                  'Status': status,
+                  'Reason': 'OK',
+                  'PhysicalResourceId': context.log_stream_name,
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId'],
+                  'Data': data
+              }
+              
+              http = urllib3.PoolManager()
+              http.request('PUT', event['ResponseURL'], 
+                          body=json.dumps(response_body),
+                          headers={'Content-Type': 'application/json'})
+
+  UpdateCallbackURLs:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: CloudFrontDistribution
+    Properties:
+      ServiceToken: !GetAtt UpdateCallbackURLsFunction.Arn
+      UserPoolId: !Ref UserPool
+      ClientId: !Ref UserPoolClient
+      CloudFrontDomain: !GetAtt CloudFrontDistribution.DomainName
+
+
+
+
+  # CloudFront Distribution
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W10
+            reason: "CloudFront access logging disabled to simplify deployment"
+          - id: W70
+            reason: "TLS 1.2 is configured via MinimumProtocolVersion: TLSv1.2_2021"
+    Properties:
+      DistributionConfig:
+        Origins:
+          - Id: ALBOrigin
+            DomainName: !GetAtt ApplicationLoadBalancer.DNSName
+            CustomOriginConfig:
+              HTTPPort: 80
+              OriginProtocolPolicy: http-only
+            OriginCustomHeaders:
+              - HeaderName: X-CloudFront-Secret
+                HeaderValue: !GetAtt CloudFrontSecretHeader.Secret
+        Enabled: true
+        DefaultCacheBehavior:
+          TargetOriginId: ALBOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - DELETE
+            - GET
+            - HEAD
+            - OPTIONS
+            - PATCH
+            - POST
+            - PUT
+          CachedMethods:
+            - GET
+            - HEAD
+          ForwardedValues:
+            QueryString: true
+            Headers:
+              - Authorization
+              - Content-Type
+              - Host
+              - CloudFront-Forwarded-Proto
+            Cookies:
+              Forward: all
+          DefaultTTL: 0
+          MaxTTL: 0
+          MinTTL: 0
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+          MinimumProtocolVersion: TLSv1.2_2021
+        PriceClass: PriceClass_100
+
+
+
+  # Custom Resource for ECR Repository
+  ECRRepositoryFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt ECRRepositoryRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import urllib3
+          from botocore.exceptions import ClientError
+          
+          def lambda_handler(event, context):
+              try:
+                  ecr = boto3.client('ecr')
+                  repo_name = event['ResourceProperties']['RepositoryName']
+                  
+                  if event['RequestType'] == 'Delete':
+                      send_response(event, context, 'SUCCESS', {'RepositoryName': repo_name})
+                      return
+                  
+                  try:
+                      response = ecr.describe_repositories(repositoryNames=[repo_name])
+                      repo_uri = response['repositories'][0]['repositoryUri']
+                  except ClientError as e:
+                      if e.response['Error']['Code'] == 'RepositoryNotFoundException':
+                          response = ecr.create_repository(
+                              repositoryName=repo_name,
+                              imageScanningConfiguration={'scanOnPush': True}
+                          )
+                          repo_uri = response['repository']['repositoryUri']
+                      else:
+                          raise
+                  
+                  send_response(event, context, 'SUCCESS', {
+                      'RepositoryName': repo_name,
+                      'RepositoryUri': repo_uri
+                  })
+                  
+              except Exception as e:
+                  send_response(event, context, 'FAILED', {'Error': str(e)})
+          
+          def send_response(event, context, status, data):
+              response_body = {
+                  'Status': status,
+                  'Reason': 'OK',
+                  'PhysicalResourceId': data.get('RepositoryName', context.log_stream_name),
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId'],
+                  'Data': data
+              }
+              
+              http = urllib3.PoolManager()
+              http.request('PUT', event['ResponseURL'], 
+                          body=json.dumps(response_body),
+                          headers={'Content-Type': 'application/json'})
+
+  ECRRepositoryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ECRRepositoryPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:CreateRepository
+                  - ecr:DescribeRepositories
+                Resource: '*'
+
+  ECRRepository:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt ECRRepositoryFunction.Arn
+      RepositoryName: 'plant-advisor-ui'
+
+  # CodeBuild Service Role
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "ECR GetAuthorizationToken and some S3 operations don't support resource-level permissions"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
+      Policies:
+        - PolicyName: CodeBuildPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:PutImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                Resource: 
+                  - !Sub 'arn:aws:s3:::${SourceBucket}/*'
+                  - !Sub 'arn:aws:s3:::${SourceBucket}'
+              
+  # CodeBuild Project
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W32
+            reason: "Environment variables contain resource identifiers (ARNs, IDs), not credentials"
+    Properties:
+      EncryptionKey: !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/s3'
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: AgentRuntimeARN
+            Value: !Ref AgentRuntimeARN
+          - Name: GatewayId
+            Value: !Ref GatewayId
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: MemoryRoleARN
+            Value: !Ref MemoryRoleARN
+          - Name: MemoryId
+            Value: !Ref MemoryId
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: IMAGE_REPO_NAME
+            Value: 'plant-advisor-ui'
+                
+          - Name: COGNITO_USER_POOL_ID
+            Value: !Ref UserPool
+          - Name: COGNITO_CLIENT_ID
+            Value: !Ref UserPoolClient
+          - Name: COGNITO_IDENTITY_POOL_ID
+            Value: !Ref IdentityPool
+          - Name: COGNITO_DOMAIN
+            Value: !Ref UserPoolDomain
+          - Name: CLOUDFRONT_SECRET_HEADER
+            Value: !GetAtt CloudFrontSecretHeader.Secret
+      Source:
+        Type: S3
+        Location: !Sub '${SourceBucket}/ui-source.zip'
+        BuildSpec: |
+          version: 0.2
+          phases:
+            pre_build:
+              commands:
+                - echo Logging in to Amazon ECR...
+                - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+                - REPOSITORY_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME
+                - cd ui
+                - echo "Configuration will be loaded from SSM Parameter Store and Secrets Manager at runtime"
+            build:
+              commands:
+                - echo Build started on `date`
+                - echo Building the Docker image with embedded configuration...
+                - BUILD_DATE=$(date +%Y%m%d%H%M%S)
+                - docker build --no-cache --build-arg BUILD_DATE=$BUILD_DATE -t $REPOSITORY_URI:latest .
+            post_build:
+              commands:
+                - echo Build completed on `date`
+                - echo Pushing the Docker image...
+                - docker push $REPOSITORY_URI:latest
+
+
+  # Custom Resource to trigger CodeBuild
+  BuildTriggerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt BuildTriggerRole.Arn
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import urllib3
+          
+          def send_response(event, context, status, data, reason='OK'):
+              response_body = {
+                  'Status': status,
+                  'Reason': reason,
+                  'PhysicalResourceId': data.get('BuildId', context.log_stream_name),
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId'],
+                  'Data': data
+              }
+              
+              http = urllib3.PoolManager()
+              http.request('PUT', event['ResponseURL'], 
+                          body=json.dumps(response_body),
+                          headers={'Content-Type': 'application/json'})
+          
+          def lambda_handler(event, context):
+              try:
+                  print(f'Event: {json.dumps(event)}')
+                  
+                  if event['RequestType'] == 'Delete':
+                      send_response(event, context, 'SUCCESS', {})
+                      return
+                  
+                  codebuild = boto3.client('codebuild')
+                  project_name = event['ResourceProperties']['ProjectName']
+                  
+                  print(f'Starting build for project: {project_name}')
+                  response = codebuild.start_build(projectName=project_name)
+                  build_id = response['build']['id']
+                  print(f'Build started with ID: {build_id}')
+                  
+                  send_response(event, context, 'SUCCESS', {'BuildId': build_id})
+                  
+              except Exception as e:
+                  error_msg = str(e)
+                  print(f'Error: {error_msg}')
+                  send_response(event, context, 'FAILED', {'Error': error_msg}, error_msg)
+
+  BuildTriggerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CodeBuildTriggerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource: !GetAtt CodeBuildProject.Arn
+
+  # Trigger the build
+  BuildTrigger:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: ECRRepository
+    Properties:
+      ServiceToken: !GetAtt BuildTriggerFunction.Arn
+      ProjectName: !Ref CodeBuildProject
+
+Outputs:
+  WebsiteURL:
+    Description: 'CloudFront Distribution URL (with Cognito Authentication)'
+    Value: !Sub 'https://${CloudFrontDistribution.DomainName}'
+    Export:
+      Name: "WebsiteURL"
+
+  UserPoolId:
+    Description: 'Cognito User Pool ID'
+    Value: !Ref UserPool
+
+  UserPoolClientId:
+    Description: 'Cognito User Pool Client ID'
+    Value: !Ref UserPoolClient
+
+  IdentityPoolId:
+    Description: 'Cognito Identity Pool ID'
+    Value: !Ref IdentityPool
+
+
+
+
+
+  ALBEndpoint:
+    Description: 'Application Load Balancer DNS Name (internal)'
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+
+  Username:
+    Description: 'username'
+    Value: !Ref DefaultUsername
+  
+  Password:
+    Description: 'password'
+    Value: !Ref DefaultPassword

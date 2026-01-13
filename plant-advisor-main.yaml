@@ -1,0 +1,78 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Master stack for Plant Health AI Assistant with UI'
+
+Parameters:
+  TavilyApiKey:
+    Type: String
+    Description: 'Tavily API key for web search functionality (optional)'
+    NoEcho: true
+    Default: '<YOUR API KEY>'
+
+  NovaActApiKey:
+    Type: String
+    Description: 'Nova-Act API key for browser automation'
+
+  BedrockRegion:
+    Type: String
+    Default: us-east-1
+    Description: 'Region for Bedrock model access (defaults to deployment region via deploy.sh)'
+
+  TemplatesBucketName:
+    Type: String
+    Description: 'S3 bucket containing nested CloudFormation templates'
+  
+  SourceBucket:
+    Type: String
+    Description: 'S3 bucket containing UI source code (leave empty to use same as TemplatesBucketName)'
+    Default: ''
+
+  SourceCodeBucket:
+    Type: String
+    Description: 'S3 bucket containing Lambda source code'
+    Default: 'plant-advisor-lambda-code'
+
+Conditions:
+  UseTemplatesBucket: !Equals [!Ref SourceBucket, '']
+
+Resources:
+  # Deploy the backend plant advisor stack
+  PlantAdvisorBackend:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://${TemplatesBucketName}.s3.amazonaws.com/plant-advisor-backend.yaml'
+      Parameters:
+        MainStackName: !Ref 'AWS::StackName'
+        TavilyApiKey: !Ref TavilyApiKey
+        NovaActApiKey: !Ref NovaActApiKey
+        BedrockRegion: !Ref BedrockRegion
+        SourceCodeBucket: !Ref SourceCodeBucket
+      TimeoutInMinutes: 90
+
+  # Deploy the UI application stack
+  PlantAdvisorUI:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: PlantAdvisorBackend
+    Properties:
+      TemplateURL: !Sub 'https://${TemplatesBucketName}.s3.amazonaws.com/plant-advisor-ui.yaml'
+      Parameters:
+        MainStackName: !Ref 'AWS::StackName'
+        SourceBucket: !If [UseTemplatesBucket, !Ref TemplatesBucketName, !Ref SourceBucket]
+        GatewayId: !GetAtt PlantAdvisorBackend.Outputs.GatewayId
+        AgentRuntimeARN: !GetAtt PlantAdvisorBackend.Outputs.RuntimeArn
+        MemoryRoleARN: !GetAtt PlantAdvisorBackend.Outputs.MemoryRoleARN
+        MemoryId: !GetAtt PlantAdvisorBackend.Outputs.MemoryId
+      TimeoutInMinutes: 30
+
+Outputs:
+
+  WebsiteURL:
+    Description: 'Plant Advisor Web Application URL'
+    Value: !GetAtt PlantAdvisorUI.Outputs.WebsiteURL
+
+  Username:
+    Description: 'Application Username'
+    Value: !GetAtt PlantAdvisorUI.Outputs.Username
+
+  Password:
+    Description: 'Application Password'
+    Value: !GetAtt PlantAdvisorUI.Outputs.Password

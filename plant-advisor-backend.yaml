@@ -1,0 +1,1022 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Plant Health AI Assistant - Backend'
+
+Parameters:
+  MainStackName:
+    Type: String
+    Description: 'Name of the main CloudFormation stack'
+    
+  TavilyApiKey:
+    Type: String
+    NoEcho: true
+    Description: 'Tavily API key for web search functionality'
+
+  NovaActApiKey:
+    Type: String
+    NoEcho: true
+    Description: 'Nova-Act API key for browser automation (optional)'
+  
+  BedrockRegion:
+    Description: 'Region for Bedrock model access'
+    Type: String
+    
+  SourceCodeBucket:
+    Type: String
+    Description: 'S3 bucket containing Lambda source code'
+    Default: 'plant-advisor-lambda-code'
+
+Resources:
+  # ===== KMS KEY FOR LAMBDA ENCRYPTION =====
+  
+  # KMS Key for Lambda environment variable encryption
+  LambdaEnvironmentKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: KMS key for Lambda environment variable encryption
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: Enable IAM policies
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: Allow Lambda service
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - 'kms:Decrypt'
+              - 'kms:DescribeKey'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'kms:ViaService': !Sub 'lambda.${AWS::Region}.amazonaws.com'
+      Tags:
+        - Key: Application
+          Value: PlantAdvisor
+        - Key: Purpose
+          Value: LambdaEnvironmentEncryption
+
+  LambdaEnvironmentKMSKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${AWS::StackName}-lambda-env'
+      TargetKeyId: !Ref LambdaEnvironmentKMSKey
+
+  # ===== LAMBDA LAYERS =====
+  
+  # HTTP Utilities Layer (requests + urllib3) - Pre-built and stored in S3
+  HttpUtilitiesLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: !Sub '${AWS::StackName}-http-utils'
+      Description: HTTP utilities (requests + urllib3) for Lambda functions
+      Content:
+        S3Bucket: !Ref SourceCodeBucket
+        S3Key: layers-prebuilt/http-utils.zip
+      CompatibleRuntimes:
+        - python3.13
+      CompatibleArchitectures:
+        - arm64
+
+  # Bedrock AgentCore Layer - Pre-built and stored in S3
+  BedrockAgentCoreLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: !Sub '${AWS::StackName}-bedrock-agentcore'
+      Description: Bedrock AgentCore toolkit with boto3 and dependencies
+      Content:
+        S3Bucket: !Ref SourceCodeBucket
+        S3Key: layers-prebuilt/bedrock-agentcore.zip
+      CompatibleRuntimes:
+        - python3.13
+      CompatibleArchitectures:
+        - arm64
+
+  # ===== IAM ROLES =====
+  
+  # Lambda execution role 
+  PlantAdvisorLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: PlantAdvisorLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # CloudWatch Logs - Scoped to this stack's Lambda functions
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream  
+                  - logs:PutLogEvents
+                Resource: 
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-*'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-*:*'
+              # Bedrock - Foundation models (no account ID in ARN)
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub 'arn:aws:bedrock:*:*:foundation-model/*'
+                  - !Sub 'arn:aws:bedrock:*:*:inference-profile/*'
+              # S3 - Scoped to source code bucket
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${SourceCodeBucket}/*'
+              # Secrets Manager - Already properly scoped
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:tavily-api-key-*'
+              # KMS - For decrypting environment variables
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                Resource: !GetAtt LambdaEnvironmentKMSKey.Arn
+
+  # AgentCore Gateway execution role 
+  AgentCoreGatewayExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock-agentcore.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+              ArnLike:
+                'aws:SourceArn': !Sub 'arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:*'
+      Policies:
+        - PolicyName: AgentCoreGatewayPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Bedrock - Foundation models (no account ID in ARN)
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub 'arn:aws:bedrock:*:*:foundation-model/*'
+                  - !Sub 'arn:aws:bedrock:*:*:inference-profile/*'
+              # Lambda - Already properly scoped to specific functions
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: 
+                  - !GetAtt PlantDetectionFunction.Arn
+                  - !GetAtt PlantCareFunction.Arn
+                  - !GetAtt WeatherForecastFunction.Arn
+                  - !GetAtt WebSearchFunction.Arn
+                  - !GetAtt PlantWebSearchFunction.Arn
+              # CloudWatch Logs - Already properly scoped
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*'
+
+  # AgentCore Runtime role 
+  AgentCoreRuntimeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AssumeRolePolicy
+            Effect: Allow
+            Principal:
+              Service: bedrock-agentcore.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+              ArnLike:
+                'aws:SourceArn': !Sub 'arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:*'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonBedrockAgentCoreMemoryBedrockModelInferenceExecutionRolePolicy
+      Policies:
+        - PolicyName: AgentCoreRuntimePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Bedrock - Foundation models (no account ID in ARN)
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub 'arn:aws:bedrock:*:*:foundation-model/*'
+                  - !Sub 'arn:aws:bedrock:*:*:inference-profile/*'
+              # ECR - Already properly scoped to account repositories
+              - Effect: Allow
+                Action:
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/*'
+              # ECR GetAuthorizationToken - AWS service limitation, must be '*'
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              # CloudWatch Logs - Already properly scoped
+              - Effect: Allow
+                Action:
+                  - logs:DescribeLogStreams
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                Resource: 
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:/aws/bedrock-agentcore/runtimes/*'
+              # X-Ray - AWS service limitation, must be '*'
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                  - xray:GetSamplingRules
+                  - xray:GetSamplingTargets
+                Resource: '*'
+              # CloudWatch Metrics - Already secured with condition
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: 'bedrock-agentcore'
+                Resource: '*'
+              # Bedrock AgentCore Workload Access - Already properly scoped
+              - Effect: Allow
+                Action:
+                  - bedrock-agentcore:GetWorkloadAccessToken
+                  - bedrock-agentcore:GetWorkloadAccessTokenForJWT
+                  - bedrock-agentcore:GetWorkloadAccessTokenForUserId
+                Resource:
+                  - !Sub 'arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default'
+                  - !Sub 'arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default/workload-identity/*'
+              # Bedrock AgentCore Memory - Scoped to account memory resources
+              - Effect: Allow
+                Action:
+                  - bedrock-agentcore:CreateMemory
+                  - bedrock-agentcore:DeleteMemory
+                  - bedrock-agentcore:GetMemory
+                  - bedrock-agentcore:ListMemories
+                  - bedrock-agentcore:ListEvents
+                  - bedrock-agentcore:UpdateMemory
+                  - bedrock-agentcore:CreateEvent
+                Resource:
+                  - !Sub 'arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:memory/*'
+              # Bedrock AgentCore Browser - Uses AWS service identifier (not account ID)
+              - Effect: Allow
+                Action:
+                  - bedrock-agentcore:StartBrowserSession
+                  - bedrock-agentcore:StopBrowserSession
+                  - bedrock-agentcore:UpdateBrowserStream
+                  - bedrock-agentcore:GetBrowser
+                  - bedrock-agentcore:ConnectBrowserAutomationStream
+                  - bedrock-agentcore:GetBrowserSession
+                  - bedrock-agentcore:ConnectBrowserLiveViewStream
+                Resource:
+                  - !Sub 'arn:aws:bedrock-agentcore:${AWS::Region}:aws:browser/*'
+              # IAM PassRole - Already scoped to specific role patterns
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: 
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/*AmazonBedrockAgentCore*'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/service-role/*AmazonBedrockAgentCore*'
+              # Secrets Manager - Already properly scoped
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: 
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:nova-act-api-key-*'
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:plant-advisor-cognito-secrets-*'
+              # KMS - For decrypting secrets
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                Resource: !GetAtt LambdaEnvironmentKMSKey.Arn
+              # SSM Parameters - Already properly scoped
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/plant-advisor/*'
+              # SSM DescribeParameters - AWS service limitation, must be '*'
+              - Effect: Allow
+                Action:
+                  - ssm:DescribeParameters
+                Resource: '*'
+
+  # AgentCore Memory role 
+  AgentCoreMemoryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock-agentcore.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonBedrockAgentCoreMemoryBedrockModelInferenceExecutionRolePolicy
+      Policies:
+        - PolicyName: AgentCoreMemoryPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Bedrock AgentCore Memory - Scoped to memory resources
+              - Effect: Allow
+                Action:
+                  - bedrock-agentcore:CreateMemory
+                  - bedrock-agentcore:GetMemory
+                  - bedrock-agentcore:UpdateMemory
+                  - bedrock-agentcore:DeleteMemory
+                  - bedrock-agentcore:ListEvents
+                  - bedrock-agentcore:CreateEvent
+                Resource:
+                  - !Sub 'arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:memory/*'
+              # KMS - Scoped to account keys
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource:
+                  - !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+              # Bedrock - Foundation models (no account ID in ARN)
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub 'arn:aws:bedrock:*:*:foundation-model/*'
+                  - !Sub 'arn:aws:bedrock:*:*:inference-profile/*'
+              # IAM PassRole - Scoped to memory role patterns
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: 
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/*AgentCoreMemoryRole*'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/*BedrockAgentCoreMemory*'
+
+
+  # Custom Resource execution role
+  CustomResourceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: AgentCoreCustomResourcePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Bedrock AgentCore - Scoped to account resources
+              - Effect: Allow
+                Action:
+                  - bedrock-agentcore:Create*
+                  - bedrock-agentcore:Delete*
+                  - bedrock-agentcore:Get*
+                  - bedrock-agentcore:List*
+                  - bedrock-agentcore:Invoke*
+                  - bedrock-agentcore:Synchronize*
+                Resource:
+                  - !Sub 'arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:*'
+              # Bedrock - Foundation models (no account ID in ARN)
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub 'arn:aws:bedrock:*:*:foundation-model/*'
+                  - !Sub 'arn:aws:bedrock:*:*:inference-profile/*'
+              # Lambda - Scoped to this stack's functions and layers
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                  - lambda:PublishLayerVersion
+                  - lambda:DeleteLayerVersion
+                Resource:
+                  - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-*'
+                  - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:layer:${AWS::StackName}-*'
+              # SSM Parameters - Scoped to plant-advisor and bedrock-agentcore paths
+              - Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                  - ssm:GetParameter
+                  - ssm:DeleteParameter
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/plant-advisor/*'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/bedrock-agentcore/*'
+              # Secrets Manager - Scoped to application secrets
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:CreateSecret
+                  - secretsmanager:Delete*
+                  - secretsmanager:UpdateSecret
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:TagResource
+                Resource:
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:plant-advisor-*'
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:nova-act-api-key-*'
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:tavily-api-key-*'
+              # CodeBuild ListProjects - AWS service limitation, must be '*'
+              - Effect: Allow
+                Action:
+                  - codebuild:ListProjects
+                Resource: '*'
+              # CodeBuild - Scoped to specific project patterns
+              - Effect: Allow
+                Action:
+                  - codebuild:CreateProject
+                  - codebuild:DeleteProject
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                  - codebuild:ListBuildsForProject
+                  - codebuild:UpdateProject
+                  - codebuild:BatchGetProjects
+                Resource: 
+                  - !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/*AmazonBedrockAgentCoreSDK*'
+                  - !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${AWS::StackName}-*'
+                  - !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/bedrock-agentcore-*'
+                  - !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:build/*'
+              # Cognito - Scoped to account user pools
+              - Effect: Allow
+                Action:
+                  - cognito-idp:Create*
+                  - cognito-idp:Delete*
+                  - cognito-idp:Describe*
+                  - cognito-idp:Update*
+                  - cognito-idp:AdminCreateUser
+                  - cognito-idp:AdminSetUserPassword
+                  - cognito-idp:AdminDeleteUser
+                Resource:
+                  - !Sub 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/*'
+              # ECR - Scoped to application repositories
+              - Effect: Allow
+                Action:
+                  - ecr:CreateRepository
+                  - ecr:DeleteRepository
+                  - ecr:DescribeRepositories
+                  - ecr:PutLifecyclePolicy
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource:
+                  - !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/plant-advisor-*'
+                  - !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/*bedrock-agentcore*'
+              # ECR GetAuthorizationToken - AWS service limitation, must be '*'
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              # S3 - Already properly scoped
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                  - s3:CreateBucket
+                  - s3:DeleteBucket
+                  - s3:PutLifecycleConfiguration
+                  - s3:GetLifecycleConfiguration
+                  - s3:PutBucketVersioning
+                Resource: 
+                  - !Sub 'arn:aws:s3:::${SourceCodeBucket}/*'
+                  - !Sub 'arn:aws:s3:::${SourceCodeBucket}'
+                  - !Sub 'arn:aws:s3:::bedrock-agentcore-codebuild-sources-${AWS::AccountId}-${AWS::Region}'
+                  - !Sub 'arn:aws:s3:::bedrock-agentcore-codebuild-sources-${AWS::AccountId}-${AWS::Region}/*'
+              # IAM PassRole - Scoped to specific role patterns
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: 
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/*AgentCoreRuntimeRole*'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/*AgentCoreMemoryRole*'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/*codebuild*'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/*AgentCoreGatewayExecutionRole*'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/*AmazonBedrockAgentCoreSDKCodeBuild*'
+              # IAM Role Management - Scoped to bedrock-agentcore related roles only
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:GetRole
+                  - iam:DeleteRole
+                  - iam:PutRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:TagRole
+                Resource:
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/*bedrock-agentcore*'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/*AmazonBedrockAgentCore*'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/service-role/*codebuild*'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/*AgentCoreMemoryRole*'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/*AgentCoreRuntimeRole*'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/*AgentCoreGatewayExecutionRole*'
+              # IAM ListRoles - AWS service limitation, must be '*'
+              - Effect: Allow
+                Action:
+                  - iam:ListRoles
+                Resource: '*'
+              # IAM Policy Management - Scoped to bedrock-agentcore policies
+              - Effect: Allow
+                Action:
+                  - iam:CreatePolicy
+                  - iam:DeletePolicy
+                  - iam:GetPolicy
+                  - iam:ListPolicyVersions
+                Resource:
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:policy/*bedrock-agentcore*'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:policy/*AmazonBedrockAgentCore*'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:policy/BedrockAgentCore*'
+              # IAM CreateServiceLinkedRole - AWS service limitation, must be '*'
+              - Effect: Allow
+                Action:
+                  - iam:CreateServiceLinkedRole
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    iam:AWSServiceName:
+                      - bedrock-agentcore.amazonaws.com
+
+  # ===== LAMBDA FUNCTIONS =====
+  
+  # Plant Detection Function
+  PlantDetectionFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-plant-det'
+      Runtime: python3.13
+      Handler: plant_detection.lambda_handler
+      Role: !GetAtt PlantAdvisorLambdaRole.Arn
+      Timeout: 120
+      MemorySize: 1024
+      ReservedConcurrentExecutions: 50
+      Architectures:
+        - arm64
+      Environment:
+        Variables:
+          BEDROCK_REGION: !Ref BedrockRegion
+          NOVA_MODEL_ID: us.amazon.nova-2-lite-v1:0
+          NOVA_MAX_TOKENS: "5000"
+          NOVA_REASONING: "medium"
+          NOVA_TEMP: "0.1"
+      KmsKeyArn: !GetAtt LambdaEnvironmentKMSKey.Arn
+      Code:
+        S3Bucket: !Ref SourceCodeBucket
+        S3Key: lambda/plant_detection.zip
+
+  # Plant Care Function
+  PlantCareFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-care'
+      Runtime: python3.13
+      Handler: plant_care.lambda_handler
+      Role: !GetAtt PlantAdvisorLambdaRole.Arn
+      Timeout: 120
+      MemorySize: 1024
+      ReservedConcurrentExecutions: 30
+      Architectures:
+        - arm64
+      Environment:
+        Variables:
+          BEDROCK_REGION: !Ref BedrockRegion
+          NOVA_MODEL_ID: us.amazon.nova-2-lite-v1:0
+          NOVA_MAX_TOKENS: "5000"
+          NOVA_REASONING: "medium"
+          NOVA_TEMP: "0.1"
+      KmsKeyArn: !GetAtt LambdaEnvironmentKMSKey.Arn
+      Code:
+        S3Bucket: !Ref SourceCodeBucket
+        S3Key: lambda/plant_care.zip
+
+  # Weather Forecast Function
+  WeatherForecastFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-weather'
+      Runtime: python3.13
+      Handler: weather_forecast.lambda_handler
+      Role: !GetAtt PlantAdvisorLambdaRole.Arn
+      Timeout: 120
+      MemorySize: 1024
+      ReservedConcurrentExecutions: 20
+      Architectures:
+        - arm64
+      Layers:
+        - !Ref HttpUtilitiesLayer
+      KmsKeyArn: !GetAtt LambdaEnvironmentKMSKey.Arn
+      Code:
+        S3Bucket: !Ref SourceCodeBucket
+        S3Key: lambda/weather_forecast.zip
+
+  # Web Search Function
+  WebSearchFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-ws'
+      Runtime: python3.13
+      Handler: websearch.lambda_handler
+      Role: !GetAtt PlantAdvisorLambdaRole.Arn
+      Timeout: 120
+      MemorySize: 1024
+      ReservedConcurrentExecutions: 20
+      Architectures:
+        - arm64
+      Description: 'Generic web search with Tavily/Bedrock fallback'
+      Layers:
+        - !Ref HttpUtilitiesLayer
+      Environment:
+        Variables:
+          TAVILY_SECRET_NAME: !Ref TavilyApiKeySecret
+          BEDROCK_REGION: !Ref BedrockRegion
+          NOVA_MODEL_ID: us.amazon.nova-2-lite-v1:0
+          NOVA_MAX_TOKENS: "5000"
+          NOVA_REASONING: "medium"
+          NOVA_TEMP: "0.1"
+      KmsKeyArn: !GetAtt LambdaEnvironmentKMSKey.Arn
+      Code:
+        S3Bucket: !Ref SourceCodeBucket
+        S3Key: lambda/websearch.zip
+
+  # Plant Web Search Function
+  PlantWebSearchFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-pws'
+      Runtime: python3.13
+      Handler: plant_websearch.lambda_handler
+      Role: !GetAtt PlantAdvisorLambdaRole.Arn
+      Timeout: 120
+      MemorySize: 1024
+      ReservedConcurrentExecutions: 20
+      Architectures:
+        - arm64
+      Description: 'Plant-specific web search with Tavily/Nova fallback'
+      Layers:
+        - !Ref HttpUtilitiesLayer
+      Environment:
+        Variables:
+          TAVILY_SECRET_NAME: !Ref TavilyApiKeySecret
+          BEDROCK_REGION: !Ref BedrockRegion
+          NOVA_MODEL_ID: us.amazon.nova-2-lite-v1:0
+          NOVA_MAX_TOKENS: "5000"
+          NOVA_REASONING: "medium"
+          NOVA_TEMP: "0.1"
+      KmsKeyArn: !GetAtt LambdaEnvironmentKMSKey.Arn
+      Code:
+        S3Bucket: !Ref SourceCodeBucket
+        S3Key: lambda/plant_websearch.zip
+
+  # ===== SECRETS MANAGER =====
+  
+  # Nova-Act API Key Secret (Native CloudFormation with main stack name)
+  NovaActSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub 'nova-act-api-key-${AWS::StackName}'
+      Description: Nova-Act API key for browser automation
+      KmsKeyId: !GetAtt LambdaEnvironmentKMSKey.Arn
+      SecretString: !Sub |
+        {
+          "nova_act_api_key": "${NovaActApiKey}"
+        }
+      Tags:
+        - Key: Application
+          Value: PlantAdvisor
+        - Key: StackName
+          Value: !Ref MainStackName
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Tavily API Key Secret (Native CloudFormation with stack name suffix)
+  TavilyApiKeySecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub 'tavily-api-key-${AWS::StackName}'
+      Description: Tavily API key for web search functionality
+      KmsKeyId: !GetAtt LambdaEnvironmentKMSKey.Arn
+      SecretString: !Sub |
+        {
+          "tavily_api_key": "${TavilyApiKey}"
+        }
+      Tags:
+        - Key: Application
+          Value: PlantAdvisor
+        - Key: StackName
+          Value: !Ref 'AWS::StackName'
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # ===== CUSTOM RESOURCES =====
+  
+  # Custom Resource CodeBuild role permissions
+  CodeBuildRoleFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-cb'
+      Runtime: python3.13
+      Handler: codebuild_role.lambda_handler
+      Role: !GetAtt CustomResourceRole.Arn
+      Timeout: 300
+      ReservedConcurrentExecutions: 1
+      Architectures:
+        - arm64
+      Code:
+        S3Bucket: !Ref SourceCodeBucket
+        S3Key: lambda/codebuild_role.zip
+
+  # Custom Resource Lambda for Gateway Creation
+  GatewayCustomResourceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-gw'
+      Runtime: python3.13
+      Handler: gateway_custom_resource.lambda_handler
+      Role: !GetAtt CustomResourceRole.Arn
+      Timeout: 900
+      MemorySize: 1024
+      ReservedConcurrentExecutions: 2
+      Architectures:
+        - arm64
+      Layers:
+        - !Ref HttpUtilitiesLayer
+        - !Ref BedrockAgentCoreLayer
+      Code:
+        S3Bucket: !Ref SourceCodeBucket
+        S3Key: lambda/gateway_custom_resource.zip
+
+  # Custom Resource Lambda for Gateway Target Registration
+  GatewayTargetCustomResourceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-gw-tgt'
+      Runtime: python3.13
+      Handler: gateway_target_custom_resource.lambda_handler
+      Role: !GetAtt CustomResourceRole.Arn
+      Timeout: 900
+      MemorySize: 1024
+      ReservedConcurrentExecutions: 2
+      Architectures:
+        - arm64
+      Layers:
+        - !Ref BedrockAgentCoreLayer
+      Code:
+        S3Bucket: !Ref SourceCodeBucket
+        S3Key: lambda/gateway_target_custom_resource.zip
+
+
+  # Custom Resource Lambda for AgentCore Runtime Creation
+  RuntimeCustomResourceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-rt'
+      Runtime: python3.13
+      Handler: runtime_custom_resource.lambda_handler
+      Role: !GetAtt CustomResourceRole.Arn
+      Timeout: 900
+      MemorySize: 1024
+      ReservedConcurrentExecutions: 2
+      Architectures:
+        - arm64
+      Layers:
+        - !Ref BedrockAgentCoreLayer
+      Code:
+        S3Bucket: !Ref SourceCodeBucket
+        S3Key: lambda/runtime_custom_resource.zip
+
+  # Custom Resource Lambda for Cognito Secret Store
+  CognitoSecretStoreFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-cog-secret'
+      Runtime: python3.13
+      Handler: cognito_secret_store.lambda_handler
+      Role: !GetAtt CustomResourceRole.Arn
+      Timeout: 300
+      MemorySize: 256
+      ReservedConcurrentExecutions: 2
+      Architectures:
+        - arm64
+      Layers:
+        - !Ref HttpUtilitiesLayer
+      Code:
+        S3Bucket: !Ref SourceCodeBucket
+        S3Key: lambda/cognito_secret_store.zip
+
+  # ===== CUSTOM RESOURCE INVOCATIONS =====
+  
+  CodeBuildRole:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt CodeBuildRoleFunction.Arn
+
+  # Create Gateway
+  PlantAdvisorGateway:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt GatewayCustomResourceFunction.Arn
+      GatewayRoleArn: !GetAtt AgentCoreGatewayExecutionRole.Arn
+      GatewayName: !Sub 
+        - 'plant-advisor-gateway-${UniqueId}'
+        - UniqueId: !Select [2, !Split ['/', !Ref 'AWS::StackId']]
+
+  # Register Gateway Targets
+  PlantAdvisorGatewayTargets:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt GatewayTargetCustomResourceFunction.Arn
+      GatewayId: !GetAtt PlantAdvisorGateway.GatewayId
+      PlantDetectionArn: !GetAtt PlantDetectionFunction.Arn
+      PlantCareArn: !GetAtt PlantCareFunction.Arn
+      WeatherForecastArn: !GetAtt WeatherForecastFunction.Arn
+      WebSearchArn: !GetAtt WebSearchFunction.Arn
+      PlantWebSearchArn: !GetAtt PlantWebSearchFunction.Arn
+
+  # Create Memory Store (Native CloudFormation)
+  PlantAdvisorMemoryStore:
+    Type: AWS::BedrockAgentCore::Memory
+    DependsOn: AgentCoreMemoryRole
+    Properties:
+      Name: PlantAdvisor_Memory
+      EventExpiryDuration: 30
+      MemoryExecutionRoleArn: !GetAtt AgentCoreMemoryRole.Arn
+      Description: 'Plant Health Analysis Memory Store'
+      Tags:
+        Application: PlantAdvisor
+        StackName: !Ref AWS::StackName
+        ManagedBy: CloudFormation
+
+  # Store Cognito Secret in Secrets Manager
+  CognitoSecretStore:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: PlantAdvisorGateway
+    Properties:
+      ServiceToken: !GetAtt CognitoSecretStoreFunction.Arn
+      StackName: !Ref MainStackName
+      CognitoInfo: !GetAtt PlantAdvisorGateway.CognitoInfo
+
+  # Create AgentCore Runtime
+  PlantAdvisorRuntime:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: 
+        - PlantAdvisorGateway
+        - PlantAdvisorGatewayTargets
+        - PlantAdvisorMemoryStore
+        - CognitoSecretStore
+    Properties:
+      ServiceToken: !GetAtt RuntimeCustomResourceFunction.Arn
+      Version: "2.1"
+      StackName: !Ref MainStackName
+      BackendStackName: !Ref AWS::StackName
+      GatewayId: !GetAtt PlantAdvisorGateway.GatewayId
+      GatewayUrl: !GetAtt PlantAdvisorGateway.GatewayUrl
+      MemoryId: !GetAtt PlantAdvisorMemoryStore.MemoryId
+      MemoryRoleArn: !GetAtt AgentCoreMemoryRole.Arn
+      RuntimeRoleArn: !GetAtt AgentCoreRuntimeRole.Arn
+      CognitoInfo: !GetAtt PlantAdvisorGateway.CognitoInfo
+
+Outputs:
+  # Lambda Function ARNs
+  PlantDetectionFunctionArn:
+    Description: 'ARN of the Plant Detection Lambda function'
+    Value: !GetAtt PlantDetectionFunction.Arn
+
+  PlantCareFunctionArn:
+    Description: 'ARN of the Plant Care Lambda function'
+    Value: !GetAtt PlantCareFunction.Arn
+
+  WeatherForecastFunctionArn:
+    Description: 'ARN of the Weather Forecast Lambda function'
+    Value: !GetAtt WeatherForecastFunction.Arn
+
+  WebSearchFunctionArn:
+    Description: 'ARN of the Web Search Lambda function'
+    Value: !GetAtt WebSearchFunction.Arn
+
+  PlantWebSearchFunctionArn:
+    Description: 'ARN of the Plant Web Search Lambda function'
+    Value: !GetAtt PlantWebSearchFunction.Arn
+
+  # AgentCore Resources
+  GatewayId:
+    Description: 'AgentCore Gateway ID'
+    Value: !GetAtt PlantAdvisorGateway.GatewayId
+    Export:
+      Name: "GatewayId"
+  
+  RuntimeArn:
+    Description: 'AgentCore Runtime ARN'  
+    Value: !GetAtt PlantAdvisorRuntime.RuntimeArn
+    Export:
+      Name: "RuntimeArn"
+
+  MemoryRoleARN:
+    Description: 'AgentCore Memory role ARN'
+    Value: !GetAtt AgentCoreMemoryRole.Arn
+    Export:
+      Name: "MemoryRoleARN"
+
+  MemoryId:
+    Description: 'AgentCore Memory Store ID'
+    Value: !GetAtt PlantAdvisorMemoryStore.MemoryId
+    Export:
+      Name: "MemoryId"
+  
+  MemoryArn:
+    Description: 'AgentCore Memory Store ARN'
+    Value: !GetAtt PlantAdvisorMemoryStore.MemoryArn
+    Export:
+      Name: "MemoryArn"
+
+  GatewayUrl:
+    Description: 'AgentCore Gateway URL'
+    Value: !GetAtt PlantAdvisorGateway.GatewayUrl
+
+  RuntimeId:
+    Description: 'AgentCore Runtime ID'
+    Value: !GetAtt PlantAdvisorRuntime.RuntimeId
+
+  RegisteredTargets:
+    Description: 'Gateway registered targets'
+    Value: !GetAtt PlantAdvisorGatewayTargets.RegisteredTargets
+
+  # IAM Role ARNs
+  AgentCoreRuntimeRoleArn:
+    Description: 'ARN of the AgentCore Runtime role'
+    Value: !GetAtt AgentCoreRuntimeRole.Arn
+
+  AgentCoreMemoryRoleArn:
+    Description: 'ARN of the AgentCore Memory role'
+    Value: !GetAtt AgentCoreMemoryRole.Arn
+
+  # Secrets Manager
+  NovaActSecretName:
+    Description: 'Name of the Nova-Act API key secret in Secrets Manager'
+    Value: !Ref NovaActSecret
+    Export:
+      Name: !Sub '${AWS::StackName}-NovaActSecretName'
+
+  NovaActSecretArn:
+    Description: 'ARN of the Nova-Act API key secret in Secrets Manager'
+    Value: !Ref NovaActSecret
+    Export:
+      Name: !Sub '${AWS::StackName}-NovaActSecretArn'
+
+  TavilyApiKeySecretName:
+    Description: 'Name of the Tavily API key secret in Secrets Manager'
+    Value: !Ref TavilyApiKeySecret
+    Export:
+      Name: !Sub '${AWS::StackName}-TavilyApiKeySecretName'
+
+  TavilyApiKeySecretArn:
+    Description: 'ARN of the Tavily API key secret in Secrets Manager'
+    Value: !Ref TavilyApiKeySecret
+    Export:
+      Name: !Sub '${AWS::StackName}-TavilyApiKeySecretArn'
+
+  BackendStackName:
+    Description: 'Backend stack name for runtime configuration'
+    Value: !Ref AWS::StackName

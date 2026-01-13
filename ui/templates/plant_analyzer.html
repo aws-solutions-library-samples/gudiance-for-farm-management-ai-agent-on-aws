@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🌱 Plant Analyzer Chat</title>
+    <link rel="stylesheet" href="{{ url_for('serve_template_files', filename='plant_analyzer.css') }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <!-- DOMPurify for XSS protection with SRI -->
+    <script 
+        src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"
+        integrity="sha384-4yPfXdIVTjpzrW8/FxE0dD6EXSLhH/mN6jrx3dGvVYo3LKT7WjELYXDNc+b6wB7S"
+        crossorigin="anonymous">
+    </script>
+</head>
+<body>
+    <!-- Chat Header -->
+    <div class="chat-header">
+        <div class="header-content">
+            <div class="avatar">🌱</div>
+            <div class="header-info">
+                <h1>AI Plant Analyzer</h1>
+                <p class="status" id="status-text">
+                    {% if runtime_configured %}
+                        <span class="online-dot"></span>Online
+                    {% else %}
+                        <span class="offline-dot"></span>Runtime not configured
+                    {% endif %}
+                </p>
+            </div>
+            <div class="user-info">
+                <span class="username">👤 {{ username }}</span>
+                <a href="/logout" class="logout-btn">🚪 Logout</a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Chat Container -->
+    <div class="chat-container">
+        <!-- Messages Area -->
+        <div class="messages-area" id="messages-area">
+            <!-- Welcome Message -->
+            <div class="message bot-message" id="welcome-message">
+                <div class="message-content">
+                    <div class="message-text">
+                        👋 Hello! I'm your AI Plant Analyzer powered by advanced multi-agent technology.
+                        <br><br>
+                        I can help you with:
+                        <br>• 🌱 Analyze your plant's health
+                        <br>• 💊 Recommend fertilizers and treatments  
+                        <br>• 🛒 Help you purchase fertilizers online
+                        <br><br>
+                        What would you like to do today?
+                    </div>
+                    <div class="message-time">{{ current_time }}</div>
+                </div>
+            </div>
+
+            <!-- Initial Options -->
+            <div class="options-container" id="initial-options">
+                <div class="option-button" data-action="analyze">
+                    <span class="option-emoji">🌱</span>
+                    <span class="option-text">Upload an image for analysis</span>
+                </div>
+                <div class="option-button" data-action="history">
+                    <span class="option-emoji">📋</span>
+                    <span class="option-text">Retrieve old analysis</span>
+                </div>
+                <div class="option-button" data-action="order">
+                    <span class="option-emoji">🛒</span>
+                    <span class="option-text">Buy Fertilizer</span>
+                </div>
+            </div>
+
+            <!-- Typing Indicator -->
+            <div class="message bot-message typing-indicator" id="typing-indicator" style="display: none;">
+                <div class="message-content">
+                    <div class="typing-animation">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </div>
+                    <div class="typing-text">AI is thinking...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Input Area -->
+        <div class="input-area" id="input-area" style="display: none;">
+            <div class="input-container">
+                <input type="text" id="message-input" placeholder="Type a message..." disabled>
+                <button id="send-button" disabled>
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                        <path d="M2 21L23 12L2 3V10L17 12L2 14V21Z" fill="currentColor"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- File Upload Modal -->
+    <div class="modal-overlay" id="upload-modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>📸 Upload Plant Image</h3>
+                <button class="close-button" id="close-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="upload-area" id="upload-area">
+                    <div class="upload-icon">📷</div>
+                    <div class="upload-text">
+                        <strong>Drop your plant image here</strong><br>
+                        or click to select a file
+                    </div>
+                    <div class="upload-info">
+                        Supports: JPG, PNG, GIF (max 16MB)
+                    </div>
+                    <input type="file" id="file-input" accept="image/*" style="display: none;">
+                </div>
+                <div class="upload-progress" id="upload-progress" style="display: none;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progress-fill"></div>
+                    </div>
+                    <div class="progress-text" id="progress-text">Uploading...</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="cancel-upload">Cancel</button>
+                <button class="btn btn-primary" id="upload-button" disabled>Upload & Analyze</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Follow-up Options Template -->
+    <div class="followup-options" id="followup-template" style="display: none;">
+        <div class="option-button small" data-action="analyze">
+            <span class="option-emoji">🌱</span>
+            <span class="option-text">Analyze another plant</span>
+        </div>
+        <div class="option-button small" data-action="history">
+            <span class="option-emoji">📋</span>
+            <span class="option-text">Retrieve old analysis</span>
+        </div>
+        <div class="option-button small" data-action="order">
+            <span class="option-emoji">🛒</span>
+            <span class="option-text">Buy Fertilizer</span>
+        </div>
+    </div>
+
+    <script src="{{ url_for('serve_template_files', filename='plant_analyzer.js') }}"></script>
+    <script>
+        // Initialize chat with runtime status
+        window.RUNTIME_CONFIGURED = {{ runtime_configured|tojson }};
+        
+        // Set current time for any dynamic elements
+        document.addEventListener('DOMContentLoaded', function() {
+            const now = new Date();
+            const timeString = now.toLocaleTimeString('en-US', { 
+                hour12: false, 
+                hour: '2-digit', 
+                minute: '2-digit' 
+            });
+            
+            // Update any empty time elements
+            const timeElements = document.querySelectorAll('.message-time');
+            timeElements.forEach(el => {
+                if (el.textContent === '' || el.textContent === 'undefined') {
+                    el.textContent = timeString;
+                }
+            });
+        });
+    </script>
+</body>
+</html>

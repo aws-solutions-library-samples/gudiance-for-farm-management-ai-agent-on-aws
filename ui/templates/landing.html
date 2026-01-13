@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plant Health AI Assistant</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 3rem;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            text-align: center;
+            max-width: 500px;
+            width: 90%;
+        }
+        
+        .logo {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 1rem;
+            font-size: 2.5rem;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 2rem;
+            font-size: 1.2rem;
+            line-height: 1.6;
+        }
+        
+        .features {
+            margin: 2rem 0;
+            text-align: left;
+        }
+        
+        .feature {
+            display: flex;
+            align-items: center;
+            margin: 1rem 0;
+            padding: 1rem;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
+        
+        .feature-icon {
+            font-size: 2rem;
+            margin-right: 1rem;
+        }
+        
+        .feature-text {
+            color: #555;
+        }
+        
+        .login-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 1rem 2rem;
+            border-radius: 50px;
+            font-size: 1.2rem;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            text-decoration: none;
+            display: inline-block;
+            margin-top: 1rem;
+        }
+        
+        .login-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+        }
+        
+        .security-note {
+            margin-top: 2rem;
+            padding: 1rem;
+            background: #e8f5e8;
+            border-radius: 10px;
+            color: #2d5a2d;
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">🌱</div>
+        <h1>Plant Health AI Assistant</h1>
+        <p class="subtitle">
+            Analyze your plants with AI-powered insights, get personalized care recommendations, and track your plant health journey.
+        </p>
+        
+        <div class="features">
+            <div class="feature">
+                <div class="feature-icon">📸</div>
+                <div class="feature-text">
+                    <strong>AI Plant Analysis</strong><br>
+                    Upload photos for instant plant identification and health assessment
+                </div>
+            </div>
+            
+            <div class="feature">
+                <div class="feature-icon">💡</div>
+                <div class="feature-text">
+                    <strong>Personalized Care Tips</strong><br>
+                    Get customized advice based on your plant's specific needs
+                </div>
+            </div>
+            
+            <div class="feature">
+                <div class="feature-icon">📋</div>
+                <div class="feature-text">
+                    <strong>History Tracking</strong><br>
+                    Keep track of all your plant analyses and progress over time
+                </div>
+            </div>
+            
+            <div class="feature">
+                <div class="feature-icon">🛒</div>
+                <div class="feature-text">
+                    <strong>Smart Recommendations</strong><br>
+                    Get fertilizer and care product suggestions tailored to your plants
+                </div>
+            </div>
+        </div>
+        
+        <a href="/login" class="login-btn">
+            🔐 Sign In to Get Started
+        </a>
+        
+        <div class="security-note">
+            🔒 Secure authentication powered by AWS Cognito.<br>
+            Your personal plant data is protected and private.
+        </div>
+    </div>
+</body>
+</html>
