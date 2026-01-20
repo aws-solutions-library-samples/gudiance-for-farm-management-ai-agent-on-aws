@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Master stack for Plant Health AI Assistant with UI'
+Description: 'SO9666 - Guidance for Farm Management AI Agent on AWS'
 
 Parameters:
   TavilyApiKey:
@@ -35,9 +35,172 @@ Conditions:
   UseTemplatesBucket: !Equals [!Ref SourceBucket, '']
 
 Resources:
+  # ===== CODEBUILD FOR LAMBDA LAYERS =====
+  
+  # CodeBuild IAM Role
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCodeBuildDeveloperAccess
+      Policies:
+        - PolicyName: CodeBuildLayerBuildPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AWS::StackName}-*'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AWS::StackName}-*:*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::${SourceCodeBucket}'
+                  - !Sub 'arn:aws:s3:::${SourceCodeBucket}/*'
+
+  # CodeBuild Project for Lambda Layers
+  LayerBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${AWS::StackName}-layer-build'
+      Description: 'Build Lambda layers for Plant Advisor'
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: ARTIFACTS_BUCKET
+            Value: !Ref SourceCodeBucket
+          - Name: AWS_REGION
+            Value: !Ref AWS::Region
+      Source:
+        Type: S3
+        Location: !Sub '${SourceCodeBucket}/source.zip'
+        BuildSpec: buildspec.yml
+      TimeoutInMinutes: 30
+      Cache:
+        Type: LOCAL
+        Modes:
+          - LOCAL_CUSTOM_CACHE
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Sub '/aws/codebuild/${AWS::StackName}-layer-build'
+
+  # Custom Resource Lambda to trigger CodeBuild
+  TriggerLayerBuildFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-trigger-build'
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt TriggerLayerBuildRole.Arn
+      Timeout: 900
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import time
+          
+          codebuild = boto3.client('codebuild')
+          
+          def lambda_handler(event, context):
+              print(f"Event: {event}")
+              
+              try:
+                  if event['RequestType'] == 'Delete':
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+                  
+                  project_name = event['ResourceProperties']['ProjectName']
+                  
+                  # Start the build
+                  print(f"Starting CodeBuild project: {project_name}")
+                  response = codebuild.start_build(projectName=project_name)
+                  build_id = response['build']['id']
+                  print(f"Build started: {build_id}")
+                  
+                  # Wait for build to complete
+                  while True:
+                      build_status = codebuild.batch_get_builds(ids=[build_id])
+                      status = build_status['builds'][0]['buildStatus']
+                      print(f"Build status: {status}")
+                      
+                      if status == 'SUCCEEDED':
+                          print("Build succeeded!")
+                          cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                              'BuildId': build_id,
+                              'Status': 'SUCCEEDED'
+                          })
+                          return
+                      elif status in ['FAILED', 'FAULT', 'TIMED_OUT', 'STOPPED']:
+                          print(f"Build failed with status: {status}")
+                          cfnresponse.send(event, context, cfnresponse.FAILED, {
+                              'BuildId': build_id,
+                              'Status': status
+                          })
+                          return
+                      
+                      time.sleep(10)
+                  
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {
+                      'Error': str(e)
+                  })
+
+  TriggerLayerBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CodeBuildTriggerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource: !GetAtt LayerBuildProject.Arn
+
+  # Trigger the layer build
+  TriggerLayerBuild:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt TriggerLayerBuildFunction.Arn
+      ProjectName: !Ref LayerBuildProject
+
   # Deploy the backend plant advisor stack
   PlantAdvisorBackend:
     Type: AWS::CloudFormation::Stack
+    DependsOn: TriggerLayerBuild
     Properties:
       TemplateURL: !Sub 'https://${TemplatesBucketName}.s3.amazonaws.com/plant-advisor-backend.yaml'
       Parameters:

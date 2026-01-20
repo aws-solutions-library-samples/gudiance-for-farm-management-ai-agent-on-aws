@@ -27,7 +27,7 @@ class NovaModelConfig:
         return {}
 
 # Environment-based configuration with defaults
-REGION = os.environ.get('BEDROCK_REGION', os.environ.get('AWS_REGION', 'us-west-2'))
+REGION = os.environ.get('BEDROCK_REGION', os.environ.get('AWS_REGION', 'us-east-1'))
 
 # Model configurations by use case - All use 5000 tokens and medium reasoning
 CONFIGS = {

@@ -6,7 +6,7 @@ set -e
 # Configuration
 RANDOM_SUFFIX=$(python3 -c "import uuid; print(str(uuid.uuid4()).replace('-','')[:8])")
 BUCKET_NAME="plant-advisor-lambda-code-${RANDOM_SUFFIX}"
-REGION=$(aws configure get region 2>/dev/null || echo "us-east-1")
+REGION="us-east-1"
 
 # Auto-detect Lambda directory (case-insensitive)
 if [ -d "Lambda" ]; then
@@ -22,6 +22,10 @@ echo "📁 Using Lambda directory: $LAMBDA_DIR"
 TEMP_DIR="temp_lambda_packages"
 
 echo "🚀 Starting Lambda deployment process..."
+echo ""
+echo "⚠️  IMPORTANT: This solution REQUIRES deployment to us-east-1"
+echo "   Deployment region: $REGION"
+echo ""
 
 # Validate AWS credentials
 echo "🔐 Validating AWS credentials..."
@@ -148,14 +152,14 @@ echo ""
 echo "⬆️ Uploading Lambda packages to S3..."
 aws s3 sync $TEMP_DIR s3://$BUCKET_NAME/lambda/ --delete
 
-echo "⬆️ Uploading pre-built Lambda layer to S3..."
-if [ -d "layers-prebuilt" ]; then
-    aws s3 sync layers-prebuilt s3://$BUCKET_NAME/layers-prebuilt/ --delete
-    echo "✅ HTTP utilities layer uploaded successfully"
-else
-    echo "❌ Pre-built layer not found! Run: cd layers/http-utils && pip install -r requirements.txt -t python && cd .. && zip -r ../layers-prebuilt/http-utils.zip http-utils/python/"
-    exit 1
-fi
+echo "📦 Creating source.zip for CodeBuild (includes layers/ and buildspec.yml)..."
+# Create a zip with buildspec.yml and layers directory for CodeBuild
+zip -r source.zip buildspec.yml layers/ -q
+echo "✅ source.zip created successfully"
+
+echo "⬆️ Uploading source.zip to S3 for CodeBuild..."
+aws s3 cp source.zip s3://$BUCKET_NAME/source.zip
+echo "✅ Source code uploaded - CodeBuild will build Lambda layers during deployment"
 
 echo "⬆️ Uploading CloudFormation templates to S3..."
 aws s3 cp plant-advisor-backend.yaml s3://$BUCKET_NAME/

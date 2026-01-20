@@ -90,7 +90,8 @@ The solution uses a serverless, multi-tier architecture powered by Amazon Bedroc
 ### Component Description
 
 **Frontend Layer:**
-- **Amazon CloudFront**: Global CDN with HTTPS termination and caching
+- **AWS WAF**: Web Application Firewall with AWS Managed Rules protecting against common threats
+- **Amazon CloudFront**: Global CDN with HTTPS termination, caching, and DDoS protection
 - **Application Load Balancer**: Distributes traffic to ECS containers in private subnets
 
 **Application Layer:**
@@ -154,7 +155,6 @@ The solution uses a serverless, multi-tier architecture powered by Amazon Bedroc
    - Sign up at [https://tavily.com](https://tavily.com)
    - Used for enhanced web search functionality
    - If not provided, the app will use Amazon Bedrock for web search as fallback
-   - Free tier: 1,000 searches/month
 
 2. **Nova-Act API Key** :
    - Required only for automated fertilizer ordering feature
@@ -162,18 +162,17 @@ The solution uses a serverless, multi-tier architecture powered by Amazon Bedroc
 
 ### Supported Regions
 
-Deploy this guidance in AWS regions that support:
-- Amazon Bedrock AgentCore
-- Amazon Bedrock (with Nova model access)
-- Amazon ECS Fargate
-- AWS Lambda (ARM64)
+⚠️ **IMPORTANT: This solution MUST be deployed in us-east-1**
 
-**Recommended Regions**:
-- US West (Oregon) - us-west-2
+**Note**: While some services (Lambda, ECS, Bedrock) technically support other regions, this solution deploys everything in us-east-1 to ensure WAF compatibility and simplified networking.
 
 ---
 
 ## Deployment Steps
+
+⚠️ **IMPORTANT**: Before deploying, ensure you understand the regional requirements:
+- This solution **MUST** be deployed in `us-east-1` (US East N. Virginia)
+- The deployment script automatically uses `us-east-1`
 
 ### Step 1: Clone the Repository
 
@@ -198,11 +197,10 @@ nova-agentcore-plant-advisor/
 │   ├── weather_forecast.py         # Weather integration
 │   ├── websearch.py                # General web search
 │   ├── plant_websearch.py          # Plant-specific search
-│   ├── nova_config.py              # Nova model configuration
-│   └── [custom resource functions]
-├── layers-prebuilt/                # Pre-built Lambda layers
-│   ├── bedrock-agentcore.zip       # AgentCore SDK
-│   └── http-utils.zip              # HTTP utilities
+│   └── nova_config.py              # Nova model configuration
+├── layers/.                        # Lambda layers
+│   ├── bedrock-agentcore           # AgentCore Starter Toolkit
+│   └── http-utils.                 # HTTP utilities
 └── ui/                             # Flask web application
     ├── app_auth.py                 # Main Flask app
     ├── Dockerfile                  # Container configuration
@@ -236,7 +234,7 @@ The script will:
 ✅ AWS credentials validated
    Account: 123456789012
    Identity: arn:aws:iam::123456789012:user/admin
-   Region: <replace with your deployed region>
+   Region: us-east-1
 
 🪣 Checking S3 bucket: plant-advisor-lambda-code-a1b2c3d4
 ✅ S3 bucket created successfully
@@ -349,13 +347,13 @@ Check AgentCore runtime and gateway are created:
 ```bash
 # List AgentCore runtimes
 aws bedrock-agentcore-control list-agent-runtimes \
-  --region <replace with your deployed region> \
+  --region us-east-1 \
   --query 'agentRuntimes[?contains(agentRuntimeName, plant)].{Name:agentRuntimeName,Status:status,ARN:agentRuntimeArn}' \
   --output table
 
 # List AgentCore gateways
 aws bedrock-agentcore-control list-gateways \
-  --region <replace with your deployed region> \
+  --region us-east-1 \
   --query 'items[?contains(name, Plant)].{Name:name,Status:status}' \
   --output table
 ```
@@ -395,8 +393,8 @@ Expected response:
 {
   "status": "healthy",
   "runtime_configured": true,
-  "runtime_arn": "arn:aws:bedrock-agentcore:<replace with your deployed region>:...",
-  "region": "<replace with your deployed region>",
+  "runtime_arn": "arn:aws:bedrock-agentcore:us-east-1:...",
+  "region": "us-east-1",
   "account_id": "123456789012",
   "timestamp": "2024-12-10T10:00:00"
 }
@@ -802,4 +800,4 @@ All plant images and analysis data remain within your AWS account. However, when
 ---
 
 **Last Updated**: December 2025 
-**Solution Version**: 1.0.0  
+**Solution Version**: 1.0.0

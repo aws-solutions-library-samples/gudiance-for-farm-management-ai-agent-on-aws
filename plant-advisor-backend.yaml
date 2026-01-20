@@ -78,9 +78,9 @@ Resources:
         S3Bucket: !Ref SourceCodeBucket
         S3Key: layers-prebuilt/http-utils.zip
       CompatibleRuntimes:
-        - python3.13
+        - python3.12
       CompatibleArchitectures:
-        - arm64
+        - x86_64
 
   # Bedrock AgentCore Layer - Pre-built and stored in S3
   BedrockAgentCoreLayer:
@@ -92,9 +92,9 @@ Resources:
         S3Bucket: !Ref SourceCodeBucket
         S3Key: layers-prebuilt/bedrock-agentcore.zip
       CompatibleRuntimes:
-        - python3.13
+        - python3.12
       CompatibleArchitectures:
-        - arm64
+        - x86_64
 
   # ===== IAM ROLES =====
   
@@ -574,7 +574,7 @@ Resources:
                 Condition:
                   StringEquals:
                     iam:AWSServiceName:
-                      - bedrock-agentcore.amazonaws.com
+                      - runtime-identity.bedrock-agentcore.amazonaws.com
 
   # ===== LAMBDA FUNCTIONS =====
   
@@ -583,14 +583,14 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub '${AWS::StackName}-plant-det'
-      Runtime: python3.13
+      Runtime: python3.12
       Handler: plant_detection.lambda_handler
       Role: !GetAtt PlantAdvisorLambdaRole.Arn
       Timeout: 120
       MemorySize: 1024
       ReservedConcurrentExecutions: 50
       Architectures:
-        - arm64
+        - x86_64
       Environment:
         Variables:
           BEDROCK_REGION: !Ref BedrockRegion
@@ -608,14 +608,14 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub '${AWS::StackName}-care'
-      Runtime: python3.13
+      Runtime: python3.12
       Handler: plant_care.lambda_handler
       Role: !GetAtt PlantAdvisorLambdaRole.Arn
       Timeout: 120
       MemorySize: 1024
       ReservedConcurrentExecutions: 30
       Architectures:
-        - arm64
+        - x86_64
       Environment:
         Variables:
           BEDROCK_REGION: !Ref BedrockRegion
@@ -633,14 +633,14 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub '${AWS::StackName}-weather'
-      Runtime: python3.13
+      Runtime: python3.12
       Handler: weather_forecast.lambda_handler
       Role: !GetAtt PlantAdvisorLambdaRole.Arn
       Timeout: 120
       MemorySize: 1024
       ReservedConcurrentExecutions: 20
       Architectures:
-        - arm64
+        - x86_64
       Layers:
         - !Ref HttpUtilitiesLayer
       KmsKeyArn: !GetAtt LambdaEnvironmentKMSKey.Arn
@@ -653,14 +653,14 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub '${AWS::StackName}-ws'
-      Runtime: python3.13
+      Runtime: python3.12
       Handler: websearch.lambda_handler
       Role: !GetAtt PlantAdvisorLambdaRole.Arn
       Timeout: 120
       MemorySize: 1024
       ReservedConcurrentExecutions: 20
       Architectures:
-        - arm64
+        - x86_64
       Description: 'Generic web search with Tavily/Bedrock fallback'
       Layers:
         - !Ref HttpUtilitiesLayer
@@ -682,14 +682,14 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub '${AWS::StackName}-pws'
-      Runtime: python3.13
+      Runtime: python3.12
       Handler: plant_websearch.lambda_handler
       Role: !GetAtt PlantAdvisorLambdaRole.Arn
       Timeout: 120
       MemorySize: 1024
       ReservedConcurrentExecutions: 20
       Architectures:
-        - arm64
+        - x86_64
       Description: 'Plant-specific web search with Tavily/Nova fallback'
       Layers:
         - !Ref HttpUtilitiesLayer
@@ -757,13 +757,13 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub '${AWS::StackName}-cb'
-      Runtime: python3.13
+      Runtime: python3.12
       Handler: codebuild_role.lambda_handler
       Role: !GetAtt CustomResourceRole.Arn
       Timeout: 300
       ReservedConcurrentExecutions: 1
       Architectures:
-        - arm64
+        - x86_64
       Code:
         S3Bucket: !Ref SourceCodeBucket
         S3Key: lambda/codebuild_role.zip
@@ -773,14 +773,14 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub '${AWS::StackName}-gw'
-      Runtime: python3.13
+      Runtime: python3.12
       Handler: gateway_custom_resource.lambda_handler
       Role: !GetAtt CustomResourceRole.Arn
       Timeout: 900
       MemorySize: 1024
       ReservedConcurrentExecutions: 2
       Architectures:
-        - arm64
+        - x86_64
       Layers:
         - !Ref HttpUtilitiesLayer
         - !Ref BedrockAgentCoreLayer
@@ -793,14 +793,14 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub '${AWS::StackName}-gw-tgt'
-      Runtime: python3.13
+      Runtime: python3.12
       Handler: gateway_target_custom_resource.lambda_handler
       Role: !GetAtt CustomResourceRole.Arn
       Timeout: 900
       MemorySize: 1024
       ReservedConcurrentExecutions: 2
       Architectures:
-        - arm64
+        - x86_64
       Layers:
         - !Ref BedrockAgentCoreLayer
       Code:
@@ -813,14 +813,14 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub '${AWS::StackName}-rt'
-      Runtime: python3.13
+      Runtime: python3.12
       Handler: runtime_custom_resource.lambda_handler
       Role: !GetAtt CustomResourceRole.Arn
       Timeout: 900
       MemorySize: 1024
       ReservedConcurrentExecutions: 2
       Architectures:
-        - arm64
+        - x86_64
       Layers:
         - !Ref BedrockAgentCoreLayer
       Code:
@@ -832,14 +832,14 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub '${AWS::StackName}-cog-secret'
-      Runtime: python3.13
+      Runtime: python3.12
       Handler: cognito_secret_store.lambda_handler
       Role: !GetAtt CustomResourceRole.Arn
       Timeout: 300
       MemorySize: 256
       ReservedConcurrentExecutions: 2
       Architectures:
-        - arm64
+        - x86_64
       Layers:
         - !Ref HttpUtilitiesLayer
       Code:

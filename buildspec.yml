@@ -1,0 +1,134 @@
+version: 0.2
+
+# CodeBuild specification for building Lambda layers
+# Architecture: x86_64 | Python: 3.12
+# This builds Lambda layers in the cloud and uploads them to S3
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - echo "🔧 Installing build dependencies for x86_64..."
+      - python --version
+      - pip --version
+      - uname -m
+      - pip install --upgrade pip
+      - echo "✅ Build environment ready (x86_64)"
+  
+  pre_build:
+    commands:
+      - echo "🔍 Verifying build environment..."
+      - echo "Python version:" $(python --version)
+      - echo "pip version:" $(pip --version)
+      - echo "Architecture:" $(uname -m)
+      - echo "Build directory:" $(pwd)
+      - ls -la
+      - echo "✅ Pre-build checks complete"
+  
+  build:
+    commands:
+      - echo "🔨 Starting Lambda layer build process..."
+      
+      # Create build directories
+      - mkdir -p build/layers
+      
+      # ===== BUILD LAMBDA LAYERS =====
+      - echo ""
+      - echo "📦 Building Lambda layers for x86_64 + Python 3.12..."
+      
+      # Build http-utils layer
+      - echo "  🔧 Building http-utils layer..."
+      - mkdir -p layers/http-utils/python
+      - |
+        if ! pip install -r layers/http-utils/requirements.txt \
+          -t layers/http-utils/python/ \
+          --upgrade; then
+          echo "❌ Failed to build http-utils layer"
+          exit 1
+        fi
+      - |
+        if [ ! -d "layers/http-utils/python" ] || [ -z "$(ls -A layers/http-utils/python 2>/dev/null)" ]; then
+          echo "❌ http-utils layer is empty"
+          exit 1
+        fi
+      - |
+        if ! ls layers/http-utils/python/ | grep -q "requests"; then
+          echo "❌ http-utils layer missing 'requests' package"
+          exit 1
+        fi
+      - cd layers/http-utils && zip -r ../../build/layers/http-utils.zip python/ -q && cd ../..
+      - |
+        SIZE=$(du -h build/layers/http-utils.zip | cut -f1)
+        echo "  ✅ http-utils layer: $SIZE"
+      
+      # Build bedrock-agentcore layer  
+      - echo "  🔧 Building bedrock-agentcore layer..."
+      - mkdir -p layers/bedrock-agentcore/python
+      - |
+        if ! pip install -r layers/bedrock-agentcore/requirements.txt \
+          -t layers/bedrock-agentcore/python/ \
+          --upgrade; then
+          echo "❌ Failed to build bedrock-agentcore layer"
+          exit 1
+        fi
+      - |
+        if [ ! -d "layers/bedrock-agentcore/python" ] || [ -z "$(ls -A layers/bedrock-agentcore/python 2>/dev/null)" ]; then
+          echo "❌ bedrock-agentcore layer is empty"
+          exit 1
+        fi
+      - |
+        if ! ls layers/bedrock-agentcore/python/ | grep -q "boto3"; then
+          echo "❌ bedrock-agentcore layer missing 'boto3' package"
+          exit 1
+        fi
+      - cd layers/bedrock-agentcore && zip -r ../../build/layers/bedrock-agentcore.zip python/ -q && cd ../..
+      - |
+        SIZE=$(du -h build/layers/bedrock-agentcore.zip | cut -f1)
+        echo "  ✅ bedrock-agentcore layer: $SIZE"
+      
+      # ===== UPLOAD TO S3 =====
+      - |
+        echo ""
+        echo "⬆️  Uploading Lambda layers to S3..."
+        echo "Bucket: ${ARTIFACTS_BUCKET}"
+        echo "Region: ${AWS_REGION}"
+      
+      # Create layers-prebuilt directory in S3 if it doesn't exist
+      - aws s3api head-object --bucket ${ARTIFACTS_BUCKET} --key layers-prebuilt/ 2>/dev/null || aws s3api put-object --bucket ${ARTIFACTS_BUCKET} --key layers-prebuilt/
+      
+      # Upload Lambda layers
+      - aws s3 cp build/layers/http-utils.zip s3://${ARTIFACTS_BUCKET}/layers-prebuilt/http-utils.zip
+      - aws s3 cp build/layers/bedrock-agentcore.zip s3://${ARTIFACTS_BUCKET}/layers-prebuilt/bedrock-agentcore.zip
+      - |
+        echo "✅ Lambda layers uploaded to s3://${ARTIFACTS_BUCKET}/layers-prebuilt/"
+        echo ""
+        echo "✅ Build complete!"
+  
+  post_build:
+    commands:
+      - echo "📊 Build Summary:"
+      - |
+        LAYER_COUNT=$(ls -1 build/layers/*.zip 2>/dev/null | wc -l)
+        echo "  Lambda Layers: $LAYER_COUNT built"
+        echo "  S3 Bucket: ${ARTIFACTS_BUCKET}"
+      - |
+        if [ -f "build/layers/http-utils.zip" ]; then
+          SIZE=$(du -h build/layers/http-utils.zip | cut -f1)
+          echo "  http-utils layer: $SIZE"
+        fi
+      - |
+        if [ -f "build/layers/bedrock-agentcore.zip" ]; then
+          SIZE=$(du -h build/layers/bedrock-agentcore.zip | cut -f1)
+          echo "  bedrock-agentcore layer: $SIZE"
+        fi
+      - echo "✅ Post-build complete"
+
+artifacts:
+  files:
+    - 'build/layers/*.zip'
+  name: lambda-layers
+
+cache:
+  paths:
+    - '/root/.cache/pip/**/*'

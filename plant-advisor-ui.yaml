@@ -1042,6 +1042,127 @@ Resources:
 
 
 
+  # WAF WebACL with AWS Managed Rules
+  WAFWebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub '${AWS::StackName}-waf'
+      Scope: CLOUDFRONT
+      Description: WAF for Plant Advisor CloudFront with AWS Managed Rules
+      DefaultAction:
+        Allow: {}
+      Rules:
+        # Exception rule for file uploads - bypass body inspection
+        - Name: AllowFileUploads
+          Priority: 0
+          Statement:
+            ByteMatchStatement:
+              SearchString: /api/analyze
+              FieldToMatch:
+                UriPath: {}
+              TextTransformations:
+                - Priority: 0
+                  Type: NONE
+              PositionalConstraint: CONTAINS
+          Action:
+            Allow: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: AllowFileUploadsMetric
+        
+        # AWS Managed Rule - Core Rule Set (CRS) with scope-down for file uploads
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 1
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+              # Exclude /api/analyze from body size restrictions
+              ScopeDownStatement:
+                NotStatement:
+                  Statement:
+                    ByteMatchStatement:
+                      SearchString: /api/analyze
+                      FieldToMatch:
+                        UriPath: {}
+                      TextTransformations:
+                        - Priority: 0
+                          Type: NONE
+                      PositionalConstraint: CONTAINS
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: AWSManagedRulesCommonRuleSetMetric
+        
+        # AWS Managed Rule - Known Bad Inputs
+        - Name: AWSManagedRulesKnownBadInputsRuleSet
+          Priority: 2
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: AWSManagedRulesKnownBadInputsRuleSetMetric
+        
+        # AWS Managed Rule - SQL Injection Protection
+        - Name: AWSManagedRulesSQLiRuleSet
+          Priority: 3
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesSQLiRuleSet
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: AWSManagedRulesSQLiRuleSetMetric
+        
+        # AWS Managed Rule - Linux Operating System
+        - Name: AWSManagedRulesLinuxRuleSet
+          Priority: 4
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesLinuxRuleSet
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: AWSManagedRulesLinuxRuleSetMetric
+        
+        # AWS Managed Rule - Unix Operating System
+        - Name: AWSManagedRulesUnixRuleSet
+          Priority: 5
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesUnixRuleSet
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: AWSManagedRulesUnixRuleSetMetric
+      
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub '${AWS::StackName}-waf-metric'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-waf'
+        - Key: Application
+          Value: PlantAdvisor
+
   # CloudFront Distribution
   CloudFrontDistribution:
     Type: AWS::CloudFront::Distribution
@@ -1054,6 +1175,7 @@ Resources:
             reason: "TLS 1.2 is configured via MinimumProtocolVersion: TLSv1.2_2021"
     Properties:
       DistributionConfig:
+        WebACLId: !GetAtt WAFWebACL.Arn
         Origins:
           - Id: ALBOrigin
             DomainName: !GetAtt ApplicationLoadBalancer.DNSName

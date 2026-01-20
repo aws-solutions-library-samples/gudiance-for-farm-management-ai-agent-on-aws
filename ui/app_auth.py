@@ -154,11 +154,7 @@ def validate_aws_region(region):
         raise ValueError("AWS region cannot be empty")
     
     valid_regions = [
-        'us-east-1', 'us-east-2', 'us-west-1', 'us-west-2',
-        'eu-west-1', 'eu-west-2', 'eu-west-3', 'eu-central-1', 'eu-north-1',
-        'ap-south-1', 'ap-northeast-1', 'ap-northeast-2', 'ap-northeast-3',
-        'ap-southeast-1', 'ap-southeast-2', 'ca-central-1', 'sa-east-1',
-        'af-south-1', 'me-south-1', 'ap-east-1'
+        'us-east-1'
     ]
     
     if region not in valid_regions:
@@ -536,9 +532,9 @@ def set_security_headers(response):
     """Set security headers on all responses"""
     response.headers['Content-Security-Policy'] = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-        "font-src 'self' https://fonts.gstatic.com; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline'; "
+        "font-src 'self'; "
         "img-src 'self' data: blob:; "
         "connect-src 'self';"
     )

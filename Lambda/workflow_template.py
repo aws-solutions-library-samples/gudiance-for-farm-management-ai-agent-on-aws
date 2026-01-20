@@ -37,7 +37,7 @@ except Exception as e:
 logger.info("=" * 70)
 
 # Initialize AWS clients for configuration loading
-REGION = os.environ.get('AWS_REGION', os.environ.get('AWS_DEFAULT_REGION', 'us-west-2'))
+REGION = os.environ.get('AWS_REGION', os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'))
 ssm_client = boto3.client('ssm', region_name=REGION)
 secrets_client = boto3.client('secretsmanager', region_name=REGION)
 
