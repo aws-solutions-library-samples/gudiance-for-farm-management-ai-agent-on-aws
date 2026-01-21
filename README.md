@@ -575,7 +575,28 @@ Optimal for sweet potato growth, but monitor for pests in high humidity.
    - Adjust care based on climate conditions
 
 ---
+## Cost estimate
 
+| AWS Service | Dimensions | Cost [USD] |
+|-------------|------------|------------|
+| Amazon CloudFront | 100GB data transfer + 1M HTTPS requests per month | $9.00 |
+| AWS WAF | Default AWS managed rules | $18 |
+| Amazon ALB | Standard ALB with minimal LCU usage | $17 |
+| Amazon ECS | 0.5 vCPU + 1GB memory | $18 |
+| Amazon Cognito | 10,000 monthly active users (MAUs) | $55.00 |
+| AWS Lambda | 5 functions (256MB x 2 sec x 2M invocations) | $18 | 
+| Amazon Bedrock AgentCore Runtime | 0.5M agent sessions per month | $88 |
+| Amazon Bedrock AgentCore Gateway | 2M MCP InvokeTool operations | $10 |
+| Amazon Bedrock AgentCore Memory | 0.5M short-term memory events | $125 |
+| Amazon Bedrock AgentCore Browser Tool | 0.5M agent sessions per month | $4 |
+| Amazon Bedrock (Amazon Nova 2 lite) |  0.5M requests/month, avg 4,000 tokens per request (input+output) | $450.00 |
+| AWS IAM | Identity and access management policies and roles | $0.00 |
+| Total Monthly Cost | | $812 |
+
+
+We recommend creating a [Budget](https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-managing-costs.html) through [AWS Cost Explorer](https://aws.amazon.com/aws-cost-management/aws-cost-explorer/) to help manage costs. Prices are subject to change. For full details, refer to the pricing webpage for each AWS service used in this Guidance.
+
+---
 ## Cleanup
 
 To avoid ongoing charges, delete all resources created by this guidance.
