@@ -460,8 +460,6 @@ def call_agentcore_runtime(payload):
         if not RUNTIME_CONFIGURED:
             logger.error(f"❌ Runtime not configured")
             return {"error": "Runtime not configured", "status": "failed"}
-        
-        logger.info(f"🔍 DEBUG: RUNTIME_CONFIGURED is True, proceeding...")
 
         # Use bedrock-agentcore client (exactly like the working code)
         bedrock_agentcore = boto3.client('bedrock-agentcore', region_name=AWS_REGION)
@@ -486,22 +484,16 @@ def call_agentcore_runtime(payload):
         logger.info("✅ Successfully called invoke_agent_runtime")
 
 
-        
-        # Process response correctly with .read() method
-        logger.info(f"🔍 DEBUG: Response type: {type(response)}")
-        logger.info(f"🔍 DEBUG: Response keys: {list(response.keys())}")
-        
+
         response_body = response['response'].read()
         response_data = json.loads(response_body)
-        
+
         logger.info("✅ AgentCore runtime call successful")
-        logger.info(f"🔍 DEBUG: Response data: {response_data}")
         
         return response_data
             
     except Exception as e:
         logger.error(f"❌ AgentCore runtime call failed: {e}")
-        logger.error(f"🔍 DEBUG: Exception type: {type(e).__name__}")
         return {"error": str(e), "status": "failed"}
 
 def process_image(file):
@@ -773,33 +765,14 @@ def get_history():
     """Retrieve analysis history - Routes to LangGraph retrieve_memory state"""
     try:
         logger.info("📋 Processing history retrieval request...")
-        logger.info(f"🔍 DEBUG: RUNTIME_CONFIGURED = {RUNTIME_CONFIGURED}")
-        logger.info(f"🔍 DEBUG: RUNTIME_ARN = {RUNTIME_ARN}")
-        
+
         # Prepare API payload for history retrieval (triggers retrieve_memory state)
         payload = {
             "prompt": "Show me my previous plant analyses"
         }
-        
-        logger.info(f"🔍 DEBUG: About to call AgentCore with payload: {payload}")
-        
+
         # Call AgentCore runtime
         result = call_agentcore_runtime(payload)
-        
-        logger.info("🔍 DEBUG: ===== RAW AGENTCORE RESPONSE =====")
-        logger.info(f"🔍 DEBUG: Full result: {json.dumps(result, indent=2)}")
-        logger.info(f"🔍 DEBUG: Result type: {type(result)}")
-        logger.info(f"🔍 DEBUG: Result status: {result.get('status')}")
-        logger.info(f"🔍 DEBUG: Result keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}")
-        
-        if result.get('final_report'):
-            logger.info(f"🔍 DEBUG: Final report length: {len(result.get('final_report', ''))}")
-            logger.info(f"🔍 DEBUG: Final report preview: {result.get('final_report', '')[:300]}...")
-        
-        if result.get('error'):
-            logger.info(f"🔍 DEBUG: Error in result: {result.get('error')}")
-            
-        logger.info("🔍 DEBUG: ===== END RAW AGENTCORE RESPONSE =====")
         
         # Format the history response for better readability
         if result.get('status') == 'success' and result.get('final_report'):
@@ -844,21 +817,11 @@ def get_history():
                     result['final_report'] = formatted_report
         
         # Check if memory error occurred and provide user-friendly message
-        logger.info("🔍 DEBUG: Checking for memory error override conditions...")
-        logger.info(f"🔍 DEBUG: result.get('status'): {result.get('status')}")
-        logger.info(f"🔍 DEBUG: result.get('debug_memory_id'): {result.get('debug_memory_id')}")
-        logger.info(f"🔍 DEBUG: 'Memory Error' in final_report: {'Memory Error' in result.get('final_report', '')}")
-        
-        override_condition = (result.get('status') == 'success' and 
-                            result.get('debug_memory_id') is None and 
+        override_condition = (result.get('status') == 'success' and
+                            result.get('debug_memory_id') is None and
                             'Memory Error' in result.get('final_report', ''))
         
-        logger.info(f"🔍 DEBUG: Override condition met: {override_condition}")
-        
         if override_condition:
-            logger.info("🔍 DEBUG: OVERRIDING AgentCore response with generic message!")
-            logger.info(f"🔍 DEBUG: Original final_report: {result.get('final_report', '')}")
-            
             # Override the technical error with user-friendly message
             result['final_report'] = """# 📋 Analysis History
 
@@ -873,9 +836,6 @@ This could be because:
             
             result['memory_status'] = 'not_configured'
             logger.info("📋 Memory not configured - showing user-friendly message")
-            logger.info(f"🔍 DEBUG: New final_report: {result['final_report']}")
-        else:
-            logger.info("🔍 DEBUG: No override - keeping original AgentCore response")
         
         # Add to chat history
         if result.get('status') == 'success':
@@ -886,8 +846,7 @@ This could be because:
             })
             
             logger.info("✅ History retrieval completed successfully")
-        
-        logger.info(f"🔍 DEBUG: Final result being returned to UI: {json.dumps(result, indent=2)}")
+
         return jsonify(result)
         
     except Exception as e:
